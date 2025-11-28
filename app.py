@@ -1,0 +1,850 @@
+"""
+Gym Tracker App - Main Application
+A comprehensive workout tracking application built with Streamlit
+"""
+
+import streamlit as st
+import pandas as pd
+from datetime import date, datetime, timedelta
+import time
+import plotly.express as px
+import plotly.graph_objects as go
+
+# Import database and utility modules
+from database.db_manager import (
+    init_database, save_workout, get_previous_workout,
+    get_exercise_history, get_all_exercises, get_exercises_by_muscle_group,
+    add_custom_exercise, get_todays_workouts, get_all_workouts,
+    get_muscle_group_stats, get_pr_records, import_workout_from_csv,
+    get_exercise_entry_counts
+)
+from utils.calculations import (
+    calculate_1rm, convert_unit, standardize_weight,
+    calculate_volume, calculate_total_volume
+)
+from utils.helpers import (
+    get_muscle_groups, get_exercise_types, format_weight,
+    get_default_exercises, validate_input, get_weight_options, get_reps_options
+)
+
+# Page configuration
+st.set_page_config(
+    page_title="My Gym Tracker",
+    page_icon="🏋️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Initialize database
+if 'db_initialized' not in st.session_state:
+    init_database()
+    st.session_state.db_initialized = True
+    # Initialize default exercises if database is empty
+    exercises = get_all_exercises()
+    if not exercises:
+        default_exercises = get_default_exercises()
+        for muscle_group, exercise_list in default_exercises.items():
+            for exercise_name in exercise_list:
+                exercise_type = 'Barbell' if 'Barbell' in exercise_name else \
+                               'Dumbbell' if 'Dumbbell' in exercise_name else \
+                               'Cable' if 'Cable' in exercise_name else \
+                               'Bodyweight' if exercise_name in ['Push-up', 'Pull-up', 'Plank'] else 'Machine'
+                add_custom_exercise(exercise_name, muscle_group, exercise_type)
+
+
+# Sidebar navigation
+st.sidebar.title("🏋️ My Gym Tracker")
+page = st.sidebar.selectbox(
+    "導航",
+    ["記錄訓練", "進度儀表板", "動作庫管理", "資料匯入"]
+)
+
+# ============================================================================
+# PAGE 1: LOG WORKOUT (記錄訓練)
+# ============================================================================
+
+def render_log_workout_page():
+    """Render the Log Workout page"""
+    st.header("📝 記錄訓練")
+    
+    # Date selection
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        workout_date = st.date_input("訓練日期", value=date.today())
+    with col2:
+        st.write("")  # Spacing
+    
+    # Muscle group and exercise selection
+    muscle_groups = get_muscle_groups()
+    selected_muscle_group = st.selectbox("選擇肌肉群", muscle_groups)
+    
+    # Get exercises for selected muscle group
+    exercises = get_exercises_by_muscle_group(selected_muscle_group)
+    if not exercises:
+        st.info(f"「{selected_muscle_group}」目前沒有動作，請先在「動作庫管理」頁面新增動作。")
+        return
+    
+    selected_exercise = st.selectbox("選擇動作", exercises)
+    
+    # Auto-fill: Get previous workout
+    previous_workout = get_previous_workout(selected_exercise)
+    if previous_workout:
+        st.info(f"💡 上一次記錄 ({previous_workout['date']}): {format_weight(previous_workout['weight'], previous_workout['unit'])} × {previous_workout['reps']} 次")
+    
+    # Dynamic sets input table
+    st.subheader("輸入訓練組數")
+    
+    # Number of sets selector
+    num_sets = st.number_input("組數", min_value=1, max_value=10, value=3, step=1)
+    
+    # Unit selection
+    unit = st.radio("單位", ["kg", "lb", "notch/plate"], horizontal=True)
+    
+    # Get weight and reps options
+    weight_options = get_weight_options(unit)
+    reps_options = get_reps_options()
+    
+    # Create dynamic input form
+    with st.form("workout_form", clear_on_submit=False):
+        sets_data = []
+        
+        # Create columns for better layout
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        for i in range(num_sets):
+            with col1:
+                weight_key = f"weight_{i}"
+                # Get default weight value
+                if previous_workout and i == 0:
+                    default_weight = previous_workout['weight']
+                    # Find closest match in options if exact match not found
+                    if default_weight not in weight_options:
+                        closest_weight = min(weight_options, key=lambda x: abs(x - default_weight))
+                        default_weight = closest_weight
+                else:
+                    default_weight = 0.0
+                
+                # Find index for default weight
+                try:
+                    default_weight_index = weight_options.index(default_weight)
+                except ValueError:
+                    default_weight_index = 0
+                
+                weight = st.selectbox(
+                    f"組 {i+1} - 重量",
+                    options=weight_options,
+                    index=default_weight_index,
+                    key=weight_key,
+                    format_func=lambda x: f"{int(x) if x == int(x) else x:.1f} {unit}" if x > 0 else "選擇重量"
+                )
+            
+            with col2:
+                reps_key = f"reps_{i}"
+                # Get default reps value
+                if previous_workout and i == 0:
+                    default_reps = previous_workout['reps']
+                    default_reps = default_reps if default_reps in reps_options else 0
+                else:
+                    default_reps = 0
+                
+                # Find index for default reps
+                try:
+                    default_reps_index = reps_options.index(default_reps)
+                except ValueError:
+                    default_reps_index = 0
+                
+                reps = st.selectbox(
+                    f"組 {i+1} - 次數",
+                    options=reps_options,
+                    index=default_reps_index,
+                    key=reps_key,
+                    format_func=lambda x: f"{x} 次" if x > 0 else "選擇次數"
+                )
+            
+            with col3:
+                # Calculate and display 1RM estimate
+                if weight > 0 and reps > 0:
+                    estimated_1rm = calculate_1rm(weight, reps)
+                    st.metric(f"組 {i+1} - 預估 1RM", f"{estimated_1rm:.1f} {unit}")
+                else:
+                    st.write("")
+            
+            if weight > 0 and reps > 0:
+                sets_data.append({
+                    'set_order': i + 1,
+                    'weight': weight,
+                    'unit': unit,
+                    'reps': reps
+                })
+        
+        # RPE and Notes
+        col_rpe, col_notes = st.columns(2)
+        with col_rpe:
+            rpe = st.slider("RPE (自覺強度)", min_value=1, max_value=10, value=7, step=1,
+                          help="1=非常輕鬆, 10=極限")
+        with col_notes:
+            notes = st.text_area("備註 (選填)", height=100,
+                               placeholder="例如：左肩有點卡、Notch 4 感覺很輕...")
+        
+        # Submit button
+        submitted = st.form_submit_button("💾 儲存訓練", type="primary")
+        
+        if submitted:
+            if not sets_data:
+                st.error("請至少輸入一組有效的訓練數據（重量和次數都大於 0）")
+            else:
+                # Validate all sets
+                valid = True
+                for set_data in sets_data:
+                    is_valid, error_msg = validate_input(set_data['weight'], set_data['reps'], set_data['unit'])
+                    if not is_valid:
+                        st.error(f"組 {set_data['set_order']}: {error_msg}")
+                        valid = False
+                        break
+                
+                if valid:
+                    try:
+                        save_workout(workout_date, selected_exercise, sets_data, rpe, notes)
+                        st.success(f"✅ 已儲存 {len(sets_data)} 組 {selected_exercise} 訓練記錄！")
+                        st.balloons()
+                    except Exception as e:
+                        st.error(f"儲存失敗: {str(e)}")
+    
+    # Rest timer (outside form for better functionality)
+    st.subheader("⏱️ 休息計時器")
+    timer_col1, timer_col2, timer_col3 = st.columns([2, 1, 1])
+    
+    with timer_col1:
+        rest_time = st.selectbox("休息時間", [30, 60, 90, 120, 180], index=1, format_func=lambda x: f"{x} 秒", key="rest_time_selector")
+    
+    with timer_col2:
+        if st.button("開始計時", key="start_timer_btn"):
+            st.session_state.timer_running = True
+            st.session_state.timer_start = time.time()
+            st.session_state.timer_duration = rest_time
+    
+    with timer_col3:
+        if st.button("停止計時", key="stop_timer_btn"):
+            st.session_state.timer_running = False
+            st.session_state.timer_start = None
+    
+    # Timer display
+    timer_placeholder = st.empty()
+    if 'timer_running' in st.session_state and st.session_state.timer_running:
+        if 'timer_start' in st.session_state and st.session_state.timer_start:
+            elapsed = int(time.time() - st.session_state.timer_start)
+            duration = st.session_state.get('timer_duration', 60)
+            remaining = max(0, duration - elapsed)
+            if remaining > 0:
+                minutes = remaining // 60
+                seconds = remaining % 60
+                timer_placeholder.info(f"⏱️ 剩餘時間: {minutes:02d}:{seconds:02d} (已過 {elapsed} 秒)")
+            else:
+                timer_placeholder.success("✅ 休息時間到！")
+                st.session_state.timer_running = False
+    
+    # Display today's workouts
+    st.subheader(f"📋 {workout_date} 的訓練記錄")
+    today_workouts = get_todays_workouts(workout_date)
+    
+    if not today_workouts.empty:
+        # Format display
+        display_df = today_workouts.copy()
+        display_df['重量'] = display_df.apply(
+            lambda row: format_weight(row['weight'], row['unit']), axis=1
+        )
+        display_df = display_df[['exercise_name', 'set_order', '重量', 'reps', 'rpe', 'notes']]
+        display_df.columns = ['動作', '組數', '重量', '次數', 'RPE', '備註']
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        # Calculate total volume
+        total_volume = 0
+        for _, row in today_workouts.iterrows():
+            total_volume += calculate_total_volume(row['weight'], row['reps'], row['unit'])
+        st.metric("今日總訓練容量", f"{total_volume:.1f} kg")
+    else:
+        st.info("今天還沒有訓練記錄")
+
+
+# ============================================================================
+# PAGE 2: PROGRESS DASHBOARD (進度儀表板)
+# ============================================================================
+
+def calculate_session_metrics(history_df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate session metrics from history DataFrame"""
+    if history_df.empty:
+        return pd.DataFrame()
+    
+    # Ensure date is datetime and sort by date
+    history_df = history_df.copy()
+    history_df['date'] = pd.to_datetime(history_df['date'])
+    history_df = history_df.sort_values('date')
+    
+    session_data = []
+    current_date = None
+    session_sets = []
+    
+    for _, row in history_df.iterrows():
+        row_date = row['date']
+        
+        # Normalize date to date only (remove time component if any)
+        if isinstance(row_date, pd.Timestamp):
+            row_date = row_date.date()
+        elif hasattr(row_date, 'date'):
+            row_date = row_date.date()
+        
+        if current_date != row_date:
+            if current_date is not None and session_sets:
+                # Calculate session metrics
+                max_weight = max(s['weight'] for s in session_sets)
+                max_reps = max(s['reps'] for s in session_sets)
+                total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
+                avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+                
+                # Get primary unit for this session (most common unit)
+                session_units = [s['unit'] for s in session_sets]
+                primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
+                
+                session_data.append({
+                    'date': pd.Timestamp(current_date),
+                    'max_weight': max_weight,
+                    'max_reps': max_reps,
+                    'total_volume': total_volume,
+                    'avg_1rm': avg_1rm,
+                    'sets': len(session_sets),
+                    'unit': primary_unit
+                })
+            current_date = row_date
+            session_sets = []
+        
+        session_sets.append({
+            'weight': row['weight'],
+            'reps': row['reps'],
+            'unit': row['unit']
+        })
+    
+    # Add last session
+    if session_sets and current_date is not None:
+        max_weight = max(s['weight'] for s in session_sets)
+        max_reps = max(s['reps'] for s in session_sets)
+        total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
+        avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+        
+        # Get primary unit for this session
+        session_units = [s['unit'] for s in session_sets]
+        primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
+        
+        session_data.append({
+            'date': pd.Timestamp(current_date),
+            'max_weight': max_weight,
+            'max_reps': max_reps,
+            'total_volume': total_volume,
+            'avg_1rm': avg_1rm,
+            'sets': len(session_sets),
+            'unit': primary_unit
+        })
+    
+    session_df = pd.DataFrame(session_data)
+    if not session_df.empty:
+        session_df = session_df.sort_values('date')
+    return session_df
+
+
+def render_progress_dashboard_page():
+    """Render the Progress Dashboard page"""
+    st.header("📈 進度儀表板")
+    
+    # Get all exercises with entry counts
+    all_exercises = get_all_exercises()
+    if not all_exercises:
+        st.info("還沒有動作記錄，請先在「記錄訓練」頁面開始記錄。")
+        return
+    
+    entry_counts = get_exercise_entry_counts()
+    
+    # Group exercises by muscle group
+    exercises_by_group = {}
+    for ex in all_exercises:
+        mg = ex['muscle_group']
+        if mg not in exercises_by_group:
+            exercises_by_group[mg] = []
+        count = entry_counts.get(ex['name'], 0)
+        exercises_by_group[mg].append({
+            'name': ex['name'],
+            'count': count
+        })
+    
+    # Sort exercises within each group by entry count (descending)
+    for mg in exercises_by_group:
+        exercises_by_group[mg].sort(key=lambda x: x['count'], reverse=True)
+    
+    # Display exercise selection by muscle groups
+    st.subheader("選擇要分析的動作（可多選）")
+    
+    selected_exercises = []
+    
+    # Display exercises grouped by muscle group
+    for muscle_group in sorted(exercises_by_group.keys()):
+        exercises = exercises_by_group[muscle_group]
+        if not exercises:
+            continue
+        
+        # Group header with select all/none toggle
+        col_header1, col_header2 = st.columns([3, 1])
+        with col_header1:
+            st.markdown(f"### {muscle_group}")
+        with col_header2:
+            group_exercise_names = [ex['name'] for ex in exercises]
+            
+            # Check if all exercises in this group are selected
+            all_selected = all(
+                st.session_state.get(f"ex_checkbox_{ex_name}", False)
+                for ex_name in group_exercise_names
+            )
+            
+            # Toggle button for the group
+            toggle_key = f"group_toggle_{muscle_group}"
+            if st.button(
+                "取消全選" if all_selected else "全選",
+                key=toggle_key,
+                use_container_width=True
+            ):
+                # Toggle all exercises in this group
+                new_state = not all_selected
+                for ex_name in group_exercise_names:
+                    st.session_state[f"ex_checkbox_{ex_name}"] = new_state
+                st.rerun()
+        
+        # Create columns for buttons (3 columns)
+        cols = st.columns(3)
+        col_idx = 0
+        
+        for ex_info in exercises:
+            ex_name = ex_info['name']
+            ex_count = ex_info['count']
+            
+            with cols[col_idx]:
+                # Use checkbox for multi-select
+                checkbox_key = f"ex_checkbox_{ex_name}"
+                is_checked = st.checkbox(
+                    f"{ex_name} ({ex_count})",
+                    key=checkbox_key,
+                    value=st.session_state.get(checkbox_key, False)
+                )
+                
+                if is_checked:
+                    selected_exercises.append(ex_name)
+            
+            col_idx = (col_idx + 1) % 3
+    
+    if not selected_exercises:
+        st.info("請至少選擇一個動作來查看趨勢圖表")
+        return
+    
+    # Metric selection
+    metric = st.radio(
+        "選擇顯示指標",
+        ["最大重量 (Max Weight)", "總容量 (Total Volume)", "預估 1RM (Estimated 1RM)"],
+        horizontal=True
+    )
+    
+    # Determine y column and label
+    if metric == "最大重量 (Max Weight)":
+        y_col = 'max_weight'
+        y_label = '最大重量'
+    elif metric == "總容量 (Total Volume)":
+        y_col = 'total_volume'
+        y_label = '總容量 (kg)'
+    else:
+        y_col = 'avg_1rm'
+        y_label = '預估 1RM'
+    
+    # Get data for all selected exercises
+    all_session_data = []
+    
+    for exercise_name in selected_exercises:
+        history_df = get_exercise_history(exercise_name)
+        
+        if history_df.empty:
+            continue
+        
+        history_df['date'] = pd.to_datetime(history_df['date'])
+        session_df = calculate_session_metrics(history_df)
+        
+        if not session_df.empty:
+            session_df['exercise'] = exercise_name
+            all_session_data.append(session_df)
+    
+    if not all_session_data:
+        st.info("選取的動作沒有訓練記錄。")
+        return
+    
+    # Combine all data
+    combined_df = pd.concat(all_session_data, ignore_index=True)
+    
+    # Group by unit for separate charts
+    # For volume and 1RM, we can show together since they're standardized
+    if metric in ["總容量 (Total Volume)", "預估 1RM (Estimated 1RM)"]:
+        # These metrics are standardized, show all together
+        st.subheader("📊 趨勢圖表")
+        fig = px.line(
+            combined_df,
+            x='date',
+            y=y_col,
+            color='exercise',
+            markers=True,
+            title=f"{y_label} 趨勢比較",
+            labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
+        )
+        fig.update_layout(height=500, hovermode='x unified')
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        # For max weight, group by unit and show separate charts
+        st.subheader("📊 趨勢圖表（依單位分組）")
+        
+        # Get unique units from the data
+        if 'unit' not in combined_df.columns:
+            # Fallback: show all together if unit info is missing
+            st.subheader("📊 趨勢圖表")
+            fig = px.line(
+                combined_df,
+                x='date',
+                y=y_col,
+                color='exercise',
+                markers=True,
+                title=f"{y_label} 趨勢比較",
+                labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
+            )
+            fig.update_layout(height=500, hovermode='x unified')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            # Group by unit
+            unique_units = combined_df['unit'].unique()
+            
+            # Create a chart for each unit
+            for unit in sorted(unique_units):
+                unit_df = combined_df[combined_df['unit'] == unit]
+                
+                if unit_df.empty:
+                    continue
+                
+                # Display unit label
+                unit_label_map = {
+                    'kg': '公斤 (kg)',
+                    'lb': '磅 (lb)',
+                    'notch': '檔位 (notch)',
+                    'notch/plate': '檔位/片 (notch/plate)'
+                }
+                unit_display = unit_label_map.get(unit, unit)
+                
+                st.markdown(f"### {unit_display}")
+                
+                fig = px.line(
+                    unit_df,
+                    x='date',
+                    y=y_col,
+                    color='exercise',
+                    markers=True,
+                    title=f"{y_label} 趨勢比較 - {unit_display}",
+                    labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'}
+                )
+                fig.update_layout(height=400, hovermode='x unified')
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # PR Wall for selected exercises
+    st.subheader("🏆 個人紀錄 (PR Wall)")
+    
+    pr_records = get_pr_records()
+    
+    # Create a more compact grid layout (3 columns)
+    num_cols = 3
+    pr_cols = st.columns(num_cols)
+    
+    # Color palette for different exercises
+    colors = [
+        "#E3F2FD",  # Light blue
+        "#F3E5F5",  # Light purple
+        "#E8F5E9",  # Light green
+        "#FFF3E0",  # Light orange
+        "#FCE4EC",  # Light pink
+        "#E0F2F1",  # Light teal
+        "#FFF9C4",  # Light yellow
+        "#F1F8E9",  # Light lime
+    ]
+    
+    for idx, exercise_name in enumerate(selected_exercises):
+        if exercise_name in pr_records:
+            pr = pr_records[exercise_name]
+            color = colors[idx % len(colors)]
+            col_idx = idx % num_cols
+            
+            with pr_cols[col_idx]:
+                # Create a styled container with background color
+                st.markdown(
+                    f"""
+                    <div style="
+                        background-color: {color};
+                        padding: 12px;
+                        border-radius: 8px;
+                        margin-bottom: 10px;
+                        border: 1px solid #ccc;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    ">
+                        <h4 style="
+                            margin: 0 0 8px 0; 
+                            padding: 0;
+                            color: #333;
+                            font-size: 1.1em;
+                            font-weight: 600;
+                        ">
+                            {exercise_name}
+                        </h4>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                
+                # Display metrics in a compact format with labels and dates on same line
+                # Format dates
+                def format_dates(dates):
+                    if not dates:
+                        return ""
+                    # Convert to datetime and format
+                    try:
+                        formatted_dates = []
+                        for date_str in dates:
+                            if isinstance(date_str, str):
+                                dt = pd.to_datetime(date_str)
+                                formatted_dates.append(dt.strftime('%Y-%m-%d'))
+                            else:
+                                formatted_dates.append(str(date_str))
+                    except:
+                        formatted_dates = [str(d) for d in dates]
+                    
+                    if len(formatted_dates) == 1:
+                        return formatted_dates[0]
+                    elif len(formatted_dates) <= 2:
+                        return ", ".join(formatted_dates)
+                    else:
+                        return f"{formatted_dates[0]} (+{len(formatted_dates)-1})"
+                
+                best_weight_dates_str = format_dates(pr.get('best_weight_dates', []))
+                best_reps_dates_str = format_dates(pr.get('best_reps_dates', []))
+                best_volume_dates_str = format_dates(pr.get('best_volume_dates', []))
+                
+                # Get unit for best weight
+                best_weight_unit = pr.get('best_weight_unit', 'kg')
+                unit_display_map = {
+                    'kg': 'kg',
+                    'lb': 'lb',
+                    'notch': 'notch',
+                    'notch/plate': 'notch'
+                }
+                unit_display = unit_display_map.get(best_weight_unit, best_weight_unit)
+                
+                st.markdown(
+                    f"""
+                    <div style="padding: 0 5px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <span style="color: #666; font-size: 0.9em;">最佳重量:</span>
+                            <div style="text-align: right;">
+                                <span style="font-weight: bold; color: #333;">{pr['best_weight']:.1f} {unit_display}</span>
+                                {f'<span style="color: #888; font-size: 0.75em; margin-left: 8px;">({best_weight_dates_str})</span>' if best_weight_dates_str else ''}
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <span style="color: #666; font-size: 0.9em;">最佳次數:</span>
+                            <div style="text-align: right;">
+                                <span style="font-weight: bold; color: #333;">{int(pr['best_reps'])}</span>
+                                {f'<span style="color: #888; font-size: 0.75em; margin-left: 8px;">({best_reps_dates_str})</span>' if best_reps_dates_str else ''}
+                            </div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: #666; font-size: 0.9em;">最佳容量:</span>
+                            <div style="text-align: right;">
+                                <span style="font-weight: bold; color: #333;">{pr['best_volume']:.1f}</span>
+                                {f'<span style="color: #888; font-size: 0.75em; margin-left: 8px;">({best_volume_dates_str})</span>' if best_volume_dates_str else ''}
+                            </div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+    
+    # Muscle group heatmap
+    st.subheader("🔥 訓練分布熱力圖")
+    
+    time_range = st.selectbox("時間範圍", [7, 30, 90, 365], index=1, format_func=lambda x: f"過去 {x} 天")
+    
+    muscle_stats = get_muscle_group_stats(days=time_range)
+    
+    if not muscle_stats.empty:
+        # Create pie chart
+        fig_pie = px.pie(
+            muscle_stats,
+            values='total_sets',
+            names='muscle_group',
+            title=f"過去 {time_range} 天訓練分布",
+            hole=0.4
+        )
+        fig_pie.update_layout(height=400)
+        st.plotly_chart(fig_pie, use_container_width=True)
+        
+        # Display stats table
+        st.dataframe(muscle_stats, use_container_width=True, hide_index=True)
+    else:
+        st.info(f"過去 {time_range} 天沒有訓練記錄。")
+
+
+# ============================================================================
+# PAGE 3: LIBRARY MANAGER (動作庫管理)
+# ============================================================================
+
+def render_library_manager_page():
+    """Render the Library Manager page"""
+    st.header("📚 動作庫管理")
+    
+    # Add new exercise form
+    st.subheader("新增動作")
+    
+    with st.form("add_exercise_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            exercise_name = st.text_input("動作名稱 *", placeholder="例如: Cable Chest Fly - Low to High")
+        with col2:
+            muscle_group = st.selectbox("肌肉群 *", get_muscle_groups())
+        with col3:
+            exercise_type = st.selectbox("動作類型 *", get_exercise_types())
+        
+        submitted = st.form_submit_button("➕ 新增動作", type="primary")
+        
+        if submitted:
+            if not exercise_name:
+                st.error("請輸入動作名稱")
+            else:
+                success = add_custom_exercise(exercise_name, muscle_group, exercise_type)
+                if success:
+                    st.success(f"✅ 已新增動作: {exercise_name}")
+                    st.balloons()
+                else:
+                    st.error(f"動作「{exercise_name}」已存在")
+    
+    # Display exercise library
+    st.subheader("動作庫列表")
+    
+    all_exercises = get_all_exercises()
+    
+    if all_exercises:
+        # Group by muscle group
+        exercises_df = pd.DataFrame(all_exercises)
+        
+        # Display grouped by muscle group
+        muscle_groups = exercises_df['muscle_group'].unique()
+        
+        for mg in muscle_groups:
+            with st.expander(f"📂 {mg}", expanded=False):
+                mg_exercises = exercises_df[exercises_df['muscle_group'] == mg]
+                display_df = mg_exercises[['name', 'exercise_type']].copy()
+                display_df.columns = ['動作名稱', '類型']
+                st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        # Summary
+        st.metric("總動作數", len(all_exercises))
+    else:
+        st.info("動作庫是空的，請新增動作。")
+
+
+# ============================================================================
+# PAGE 4: DATA IMPORT (資料匯入)
+# ============================================================================
+
+def render_data_import_page():
+    """Render the Data Import page"""
+    st.header("📥 資料匯入")
+    
+    st.markdown("""
+    ### 匯入說明
+    
+    您可以上傳 CSV 檔案來匯入歷史訓練記錄。CSV 檔案應包含以下欄位：
+    
+    - **Date**: 訓練日期 (格式: YYYY-MM-DD)
+    - **Muscle Group**: 肌肉群 (例如: Chest, Back, Arms)
+    - **Exercise**: 動作名稱
+    - **Set Order**: 組數順序 (1, 2, 3...)
+    - **Weight**: 重量
+    - **Unit**: 單位 (kg, lb, notch, notch/plate)
+    - **Reps**: 次數
+    - **Note**: 備註 (選填)
+    """)
+    
+    # File uploader
+    uploaded_file = st.file_uploader(
+        "選擇 CSV 檔案",
+        type=['csv'],
+        help="上傳包含訓練記錄的 CSV 檔案"
+    )
+    
+    if uploaded_file is not None:
+        try:
+            # Read CSV
+            df = pd.read_csv(uploaded_file)
+            
+            # Display preview
+            st.subheader("📋 檔案預覽 (前 5 行)")
+            st.dataframe(df.head(5), use_container_width=True)
+            
+            # Check required columns
+            required_columns = ['Date', 'Exercise', 'Set Order', 'Weight', 'Unit', 'Reps']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                st.error(f"❌ CSV 檔案缺少必要欄位: {', '.join(missing_columns)}")
+                st.info("請確認 CSV 檔案包含以下欄位: Date, Muscle Group, Exercise, Set Order, Weight, Unit, Reps, Note")
+            else:
+                st.success(f"✅ 檔案格式正確！共 {len(df)} 筆記錄")
+                
+                # Import button
+                if st.button("🚀 開始匯入", type="primary"):
+                    with st.spinner("正在匯入資料..."):
+                        success_count, error_count, error_messages = import_workout_from_csv(df)
+                    
+                    # Display results
+                    if success_count > 0:
+                        st.success(f"✅ 成功匯入 {success_count} 筆記錄！")
+                        st.balloons()
+                    
+                    if error_count > 0:
+                        st.warning(f"⚠️ {error_count} 筆記錄匯入失敗")
+                        with st.expander("查看錯誤詳情"):
+                            for msg in error_messages[:20]:  # Show first 20 errors
+                                st.text(msg)
+                            if len(error_messages) > 20:
+                                st.text(f"... 還有 {len(error_messages) - 20} 個錯誤")
+                    
+                    if success_count == 0 and error_count == 0:
+                        st.info("沒有資料被匯入")
+        
+        except Exception as e:
+            st.error(f"❌ 讀取檔案時發生錯誤: {str(e)}")
+            st.info("請確認檔案格式正確且為有效的 CSV 檔案")
+
+
+# ============================================================================
+# MAIN APP ROUTING
+# ============================================================================
+
+if page == "記錄訓練":
+    render_log_workout_page()
+elif page == "進度儀表板":
+    render_progress_dashboard_page()
+elif page == "動作庫管理":
+    render_library_manager_page()
+elif page == "資料匯入":
+    render_data_import_page()
+
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.markdown("**My Gym Tracker** v1.0")
+st.sidebar.markdown("記錄每一次訓練，見證每一次進步 💪")
+
