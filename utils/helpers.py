@@ -90,6 +90,21 @@ def infer_exercise_type(exercise_name: str) -> str:
         return 'Other'
 
 
+def is_assisted_exercise(exercise_name: str) -> bool:
+    """
+    Check if an exercise is an assisted exercise
+    
+    Args:
+        exercise_name: Name of the exercise
+    
+    Returns:
+        True if the exercise is assisted (lower weight = better performance)
+    """
+    assisted_keywords = ['assisted', 'assist', '減重', '輔助']
+    exercise_lower = exercise_name.lower()
+    return any(keyword in exercise_lower for keyword in assisted_keywords)
+
+
 def get_exercise_types() -> List[str]:
     """
     Get list of exercise types
@@ -218,20 +233,38 @@ def get_reps_options() -> List[int]:
 def get_default_exercises() -> dict:
     """
     Get default exercise library organized by muscle group
+    Includes all exercises from user's database
     
     Returns:
         Dictionary with muscle groups as keys and exercise lists as values
     """
     return {
         '胸 (Chest)': [
+            'Barbell Bench Press',
             'Bench Press',
-            'Incline Bench Press',
+            'Cable Chest Fly (Mid/Kneeling)',
+            'Cable Chest Fly (High-to-Low)',
+            'Cable Chest Fly (Low-to-High)',
+            'Seated Chest Press (Machine)',
+            'Seated Chest Press (Horizontal)',
+            'Seated Chest Press (Vertical)',
+            'Machine Chest Fly',
+            'Incline Dumbbell Press',
             'Dumbbell Fly',
+            'Incline Bench Press',
             'Cable Chest Fly',
             'Push-up'
         ],
         '背 (Back)': [
+            'Single-Arm Cable Row',
+            'Lat Pulldown (Wide)',
+            'Lat Pulldown (Reverse)',
+            'Lat Pulldown (Narrow)',
             'Pull-up',
+            'Assisted Pull-up',
+            'Seated Cable Row (Both Hands)',
+            'Back Extension',
+            'Dead Hang',
             'Lat Pulldown',
             'Barbell Row',
             'Dumbbell Row',
@@ -252,6 +285,8 @@ def get_default_exercises() -> dict:
             'Leg Extension'
         ],
         '手臂 (Arms)': [
+            'Preacher Curl',
+            'Dumbbell Bicep Curl (Single Arm)',
             'Bicep Curl',
             'Tricep Extension',
             'Hammer Curl',

@@ -24,7 +24,8 @@ from utils.calculations import (
 )
 from utils.helpers import (
     get_muscle_groups, get_exercise_types, format_weight,
-    get_default_exercises, validate_input, get_weight_options, get_reps_options
+    get_default_exercises, validate_input, get_weight_options, get_reps_options,
+    is_assisted_exercise
 )
 
 # Page configuration
@@ -42,13 +43,12 @@ if 'db_initialized' not in st.session_state:
     # Initialize default exercises if database is empty
     exercises = get_all_exercises()
     if not exercises:
+        from utils.helpers import infer_exercise_type
         default_exercises = get_default_exercises()
         for muscle_group, exercise_list in default_exercises.items():
             for exercise_name in exercise_list:
-                exercise_type = 'Barbell' if 'Barbell' in exercise_name else \
-                               'Dumbbell' if 'Dumbbell' in exercise_name else \
-                               'Cable' if 'Cable' in exercise_name else \
-                               'Bodyweight' if exercise_name in ['Push-up', 'Pull-up', 'Plank'] else 'Machine'
+                # Use infer_exercise_type for better type detection
+                exercise_type = infer_exercise_type(exercise_name)
                 add_custom_exercise(exercise_name, muscle_group, exercise_type)
 
 
@@ -58,6 +58,21 @@ page = st.sidebar.selectbox(
     "導航",
     ["記錄訓練", "進度儀表板", "動作庫管理", "資料匯入"]
 )
+
+# Bodyweight setting for assisted exercises
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⚙️ 設定")
+if 'bodyweight' not in st.session_state:
+    st.session_state.bodyweight = 135.0  # Default 135 lbs
+
+bodyweight = st.sidebar.number_input(
+    "體重 (用於計算輔助動作的有效重量) (lb)",
+    min_value=0.0,
+    value=st.session_state.bodyweight,
+    step=1.0,
+    help="此數值用於計算輔助動作的有效重量 (有效重量 = 體重 - 輔助重量)"
+)
+st.session_state.bodyweight = bodyweight
 
 # ============================================================================
 # PAGE 1: LOG WORKOUT (記錄訓練)
@@ -270,7 +285,7 @@ def render_log_workout_page():
 # PAGE 2: PROGRESS DASHBOARD (進度儀表板)
 # ============================================================================
 
-def calculate_session_metrics(history_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = None, bodyweight: float = None) -> pd.DataFrame:
     """Calculate session metrics from history DataFrame"""
     if history_df.empty:
         return pd.DataFrame()
@@ -295,15 +310,36 @@ def calculate_session_metrics(history_df: pd.DataFrame) -> pd.DataFrame:
         
         if current_date != row_date:
             if current_date is not None and session_sets:
-                # Calculate session metrics
-                max_weight = max(s['weight'] for s in session_sets)
-                max_reps = max(s['reps'] for s in session_sets)
-                total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
-                avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+                # Check if this is an assisted exercise
+                is_assisted = is_assisted_exercise(exercise_name) if exercise_name else False
                 
-                # Get primary unit for this session (most common unit)
-                session_units = [s['unit'] for s in session_sets]
-                primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
+                # Calculate session metrics
+                if is_assisted and bodyweight:
+                    # For assisted exercises, calculate effective weight
+                    # Effective weight = bodyweight - assisted weight
+                    # Convert bodyweight to same unit as session
+                    session_units = [s['unit'] for s in session_sets]
+                    primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
+                    
+                    # Convert bodyweight to session unit (assuming bodyweight is in lb)
+                    from utils.calculations import convert_unit
+                    bodyweight_in_unit = convert_unit(bodyweight, 'lb', primary_unit)
+                    
+                    # Calculate effective weights
+                    effective_weights = [bodyweight_in_unit - s['weight'] for s in session_sets]
+                    max_weight = max(effective_weights)
+                    max_reps = max(s['reps'] for s in session_sets)
+                    total_volume = sum(calculate_total_volume(bodyweight_in_unit - s['weight'], s['reps'], primary_unit) for s in session_sets)
+                    avg_1rm = sum(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+                else:
+                    max_weight = max(s['weight'] for s in session_sets)
+                    max_reps = max(s['reps'] for s in session_sets)
+                    total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
+                    avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+                    
+                    # Get primary unit for this session (most common unit)
+                    session_units = [s['unit'] for s in session_sets]
+                    primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
                 
                 session_data.append({
                     'date': pd.Timestamp(current_date),
@@ -325,14 +361,30 @@ def calculate_session_metrics(history_df: pd.DataFrame) -> pd.DataFrame:
     
     # Add last session
     if session_sets and current_date is not None:
-        max_weight = max(s['weight'] for s in session_sets)
-        max_reps = max(s['reps'] for s in session_sets)
-        total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
-        avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+        # Check if this is an assisted exercise
+        is_assisted = is_assisted_exercise(exercise_name) if exercise_name else False
         
-        # Get primary unit for this session
-        session_units = [s['unit'] for s in session_sets]
-        primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
+        if is_assisted and bodyweight:
+            # For assisted exercises, calculate effective weight
+            session_units = [s['unit'] for s in session_sets]
+            primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
+            
+            from utils.calculations import convert_unit
+            bodyweight_in_unit = convert_unit(bodyweight, 'lb', primary_unit)
+            
+            effective_weights = [bodyweight_in_unit - s['weight'] for s in session_sets]
+            max_weight = max(effective_weights)
+            max_reps = max(s['reps'] for s in session_sets)
+            total_volume = sum(calculate_total_volume(bodyweight_in_unit - s['weight'], s['reps'], primary_unit) for s in session_sets)
+            avg_1rm = sum(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+        else:
+            max_weight = max(s['weight'] for s in session_sets)
+            max_reps = max(s['reps'] for s in session_sets)
+            total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
+            avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+            
+            session_units = [s['unit'] for s in session_sets]
+            primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
         
         session_data.append({
             'date': pd.Timestamp(current_date),
@@ -469,7 +521,7 @@ def render_progress_dashboard_page():
             continue
         
         history_df['date'] = pd.to_datetime(history_df['date'])
-        session_df = calculate_session_metrics(history_df)
+        session_df = calculate_session_metrics(history_df, exercise_name, st.session_state.get('bodyweight', 135.0))
         
         if not session_df.empty:
             session_df['exercise'] = exercise_name
@@ -642,13 +694,30 @@ def render_progress_dashboard_page():
                 }
                 unit_display = unit_display_map.get(best_weight_unit, best_weight_unit)
                 
+                # Handle assisted exercises
+                is_assisted = pr.get('is_assisted', False)
+                bodyweight = st.session_state.get('bodyweight', 135.0)
+                
+                if is_assisted:
+                    # Calculate effective weight for display
+                    from utils.calculations import convert_unit
+                    bodyweight_in_unit = convert_unit(bodyweight, 'lb', best_weight_unit)
+                    effective_weight = bodyweight_in_unit - pr['best_weight']
+                    assist_weight = pr['best_weight']
+                    
+                    weight_display = f"{effective_weight:.1f} {unit_display} (輔助: {assist_weight:.1f} {unit_display})"
+                    weight_note = " (較低較好)"
+                else:
+                    weight_display = f"{pr['best_weight']:.1f} {unit_display}"
+                    weight_note = ""
+                
                 st.markdown(
                     f"""
                     <div style="padding: 0 5px;">
                         <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                            <span style="color: #666; font-size: 0.9em;">最佳重量:</span>
+                            <span style="color: #666; font-size: 0.9em;">最佳重量{weight_note}:</span>
                             <div style="text-align: right;">
-                                <span style="font-weight: bold; color: #333;">{pr['best_weight']:.1f} {unit_display}</span>
+                                <span style="font-weight: bold; color: #333;">{weight_display}</span>
                                 {f'<span style="color: #888; font-size: 0.75em; margin-left: 8px;">({best_weight_dates_str})</span>' if best_weight_dates_str else ''}
                             </div>
                         </div>
