@@ -24,7 +24,7 @@ from database.db_manager import (
     get_exercise_history, get_all_exercises, get_exercises_by_muscle_group,
     add_custom_exercise, get_todays_workouts, get_all_workouts,
     get_muscle_group_stats, get_pr_records, import_workout_from_csv,
-    get_exercise_entry_counts
+    get_exercise_entry_counts, get_exercise_details, update_exercise_steps
 )
 from utils.calculations import (
     calculate_1rm, convert_unit, standardize_weight,
@@ -109,7 +109,46 @@ def render_log_workout_page(user_id: str):
         st.info(f"「{selected_muscle_group}」目前沒有動作，請先在「動作庫管理」頁面新增動作。")
         return
     
-    selected_exercise = st.selectbox("選擇動作", exercises)
+    # Exercise selection with buttons
+    st.subheader("選擇動作")
+    
+    # Initialize selected exercise in session state if not set
+    if 'selected_exercise' not in st.session_state:
+        st.session_state.selected_exercise = None
+    
+    # Create button grid (3 columns)
+    num_cols = 3
+    exercise_cols = st.columns(num_cols)
+    
+    # Display exercise buttons
+    for idx, exercise_name in enumerate(exercises):
+        col_idx = idx % num_cols
+        with exercise_cols[col_idx]:
+            # Highlight selected button
+            button_type = "primary" if st.session_state.selected_exercise == exercise_name else "secondary"
+            if st.button(
+                exercise_name,
+                key=f"ex_btn_{exercise_name}",
+                use_container_width=True,
+                type=button_type
+            ):
+                st.session_state.selected_exercise = exercise_name
+                st.rerun()
+    
+    # Get selected exercise
+    selected_exercise = st.session_state.selected_exercise
+    
+    # Display execution steps if exercise is selected
+    if selected_exercise:
+        exercise_data = get_exercise_details(user_id, selected_exercise)
+        if exercise_data and exercise_data.get('execution_steps'):
+            st.info("📋 執行步驟")
+            st.markdown(exercise_data['execution_steps'])
+    
+    # Check if exercise is selected before proceeding
+    if not selected_exercise:
+        st.info("請選擇一個動作以繼續")
+        return
     
     # Auto-fill: Get previous workout
     previous_workout = get_previous_workout(user_id, selected_exercise)
@@ -796,22 +835,31 @@ def render_library_manager_page(user_id: str):
         with col3:
             exercise_type = st.selectbox("動作類型 *", get_exercise_types())
         
+        execution_steps = st.text_area(
+            "執行步驟 (選填，支援 Markdown)",
+            placeholder="例如：\n1. 起始姿勢：...\n2. 動作要領：...\n3. 注意事項：...",
+            height=150,
+            help="使用 Markdown 格式撰寫執行步驟，支援標題、列表等格式"
+        )
+        
         submitted = st.form_submit_button("➕ 新增動作", type="primary")
         
         if submitted:
             if not exercise_name:
                 st.error("請輸入動作名稱")
             else:
-                success = add_custom_exercise(user_id, exercise_name, muscle_group, exercise_type)
+                success = add_custom_exercise(
+                    user_id, 
+                    exercise_name, 
+                    muscle_group, 
+                    exercise_type,
+                    execution_steps if execution_steps.strip() else None
+                )
                 if success:
                     st.success(f"✅ 已新增動作: {exercise_name}")
                     st.balloons()
                 else:
                     st.error(f"動作「{exercise_name}」已存在")
-    
-    # Get user_id from session
-    user = get_current_user()
-    user_id = user['id'] if user else None
     
     # Display exercise library
     st.subheader("動作庫列表")
@@ -828,9 +876,53 @@ def render_library_manager_page(user_id: str):
         for mg in muscle_groups:
             with st.expander(f"📂 {mg}", expanded=False):
                 mg_exercises = exercises_df[exercises_df['muscle_group'] == mg]
-                display_df = mg_exercises[['name', 'exercise_type']].copy()
-                display_df.columns = ['動作名稱', '類型']
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                for _, ex in mg_exercises.iterrows():
+                    ex_name = ex['name']
+                    ex_type = ex['exercise_type']
+                    has_steps = ex.get('execution_steps') and str(ex.get('execution_steps')).strip()
+                    
+                    # Create columns for exercise info and edit button
+                    info_col, edit_col = st.columns([4, 1])
+                    
+                    with info_col:
+                        step_indicator = "📋" if has_steps else "📝"
+                        st.markdown(f"**{ex_name}** ({ex_type}) {step_indicator}")
+                    
+                    with edit_col:
+                        edit_key = f"edit_steps_{ex_name}"
+                        if st.button("編輯步驟", key=edit_key, use_container_width=True):
+                            st.session_state[f"editing_{ex_name}"] = True
+                            st.rerun()
+                    
+                    # Show edit form if editing
+                    if st.session_state.get(f"editing_{ex_name}", False):
+                        with st.form(f"edit_steps_form_{ex_name}", clear_on_submit=False):
+                            current_steps = ex.get('execution_steps', '') or ''
+                            new_steps = st.text_area(
+                                "執行步驟 (支援 Markdown)",
+                                value=current_steps,
+                                height=150,
+                                key=f"steps_input_{ex_name}",
+                                help="使用 Markdown 格式撰寫執行步驟"
+                            )
+                            
+                            col_save, col_cancel = st.columns(2)
+                            with col_save:
+                                if st.form_submit_button("💾 儲存", type="primary"):
+                                    if update_exercise_steps(user_id, ex_name, new_steps.strip() if new_steps.strip() else None):
+                                        st.success(f"✅ 已更新 {ex_name} 的執行步驟")
+                                        st.session_state[f"editing_{ex_name}"] = False
+                                        st.rerun()
+                                    else:
+                                        st.error("更新失敗")
+                            
+                            with col_cancel:
+                                if st.form_submit_button("❌ 取消"):
+                                    st.session_state[f"editing_{ex_name}"] = False
+                                    st.rerun()
+                    
+                    st.divider()
         
         # Summary
         st.metric("總動作數", len(all_exercises))

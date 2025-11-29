@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS public.exercises (
     name TEXT NOT NULL,
     muscle_group TEXT NOT NULL,
     exercise_type TEXT NOT NULL,
+    execution_steps TEXT,  -- Markdown-formatted execution steps
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     UNIQUE(user_id, name)  -- Each user's exercise names are unique
 );

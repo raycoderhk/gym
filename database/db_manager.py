@@ -148,7 +148,7 @@ def get_all_exercises(user_id: str) -> List[Dict]:
     supabase = get_supabase()
     
     result = supabase.table("exercises")\
-        .select("id, name, muscle_group, exercise_type")\
+        .select("id, name, muscle_group, exercise_type, execution_steps")\
         .eq("user_id", user_id)\
         .order("muscle_group")\
         .order("name")\
@@ -201,9 +201,16 @@ def get_exercises_by_muscle_group(user_id: str, muscle_group: str) -> List[str]:
     return [row['name'] for row in result.data] if result.data else []
 
 
-def add_custom_exercise(user_id: str, name: str, muscle_group: str, exercise_type: str) -> bool:
+def add_custom_exercise(user_id: str, name: str, muscle_group: str, exercise_type: str, execution_steps: Optional[str] = None) -> bool:
     """
     Add a custom exercise to the library
+    
+    Args:
+        user_id: User UUID
+        name: Exercise name
+        muscle_group: Muscle group
+        exercise_type: Exercise type
+        execution_steps: Optional markdown-formatted execution steps
     
     Returns:
         True if successful, False if exercise already exists
@@ -217,6 +224,8 @@ def add_custom_exercise(user_id: str, name: str, muscle_group: str, exercise_typ
             "muscle_group": muscle_group,
             "exercise_type": exercise_type
         }
+        if execution_steps:
+            data["execution_steps"] = execution_steps
         supabase.table("exercises").insert(data).execute()
         return True
     except Exception as e:
@@ -224,6 +233,58 @@ def add_custom_exercise(user_id: str, name: str, muscle_group: str, exercise_typ
         if "unique" in str(e).lower() or "duplicate" in str(e).lower():
             return False
         raise
+
+
+def get_exercise_details(user_id: str, exercise_name: str) -> Optional[Dict]:
+    """
+    Get full exercise details including execution steps
+    
+    Args:
+        user_id: User UUID
+        exercise_name: Name of the exercise
+    
+    Returns:
+        Dictionary with exercise details or None
+    """
+    supabase = get_supabase()
+    
+    result = supabase.table("exercises")\
+        .select("id, name, muscle_group, exercise_type, execution_steps")\
+        .eq("user_id", user_id)\
+        .eq("name", exercise_name)\
+        .limit(1)\
+        .execute()
+    
+    if result.data and len(result.data) > 0:
+        return result.data[0]
+    return None
+
+
+def update_exercise_steps(user_id: str, exercise_name: str, execution_steps: Optional[str]) -> bool:
+    """
+    Update execution steps for an exercise
+    
+    Args:
+        user_id: User UUID
+        exercise_name: Name of the exercise
+        execution_steps: Markdown-formatted execution steps (None to clear)
+    
+    Returns:
+        True if successful, False if exercise not found
+    """
+    supabase = get_supabase()
+    
+    try:
+        result = supabase.table("exercises")\
+            .update({"execution_steps": execution_steps})\
+            .eq("user_id", user_id)\
+            .eq("name", exercise_name)\
+            .execute()
+        
+        return len(result.data) > 0 if result.data else False
+    except Exception as e:
+        print(f"Error updating exercise steps: {e}")
+        return False
 
 
 def get_todays_workouts(user_id: str, workout_date: date) -> pd.DataFrame:
