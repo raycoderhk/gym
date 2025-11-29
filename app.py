@@ -244,13 +244,16 @@ def render_log_workout_page(user_id: str):
     
     unit = st.radio("單位", ["kg", "lb", "notch/plate"], index=default_unit_index, horizontal=True, key=unit_widget_key)
     
-    # If we have copied data, ensure we use the copied unit for weight options
-    # This is important because the radio button might not have updated yet
+    # If we have copied data, use the copied unit for weight options and calculations
+    # This ensures weights are correctly matched even if radio button hasn't visually updated yet
     effective_unit = unit
     if copied_data and 'unit' in copied_data:
-        # Use copied unit if it exists, but only if user hasn't manually changed it
-        # For now, we'll use the radio button value, but ensure weight_options match
-        effective_unit = copied_data['unit'] if unit == copied_data['unit'] else unit
+        # When copying, prioritize the copied unit for weight calculations
+        # But still respect user's manual unit selection if they change it
+        if copy_timestamp > 0:  # Recently copied
+            effective_unit = copied_data['unit']
+        else:
+            effective_unit = unit
     
     # Get weight and reps options based on effective unit
     weight_options = get_weight_options(effective_unit)
@@ -304,7 +307,7 @@ def render_log_workout_page(user_id: str):
                     options=weight_options,
                     index=default_weight_index,
                     key=weight_key,
-                    format_func=lambda x: f"{int(x) if x == int(x) else x:.1f} {unit}" if x > 0 else "選擇重量"
+                    format_func=lambda x: f"{int(x) if x == int(x) else x:.1f} {effective_unit}" if x > 0 else "選擇重量"
                 )
             
             with col2:
@@ -336,7 +339,7 @@ def render_log_workout_page(user_id: str):
                 # Calculate and display 1RM estimate
                 if weight > 0 and reps > 0:
                     estimated_1rm = calculate_1rm(weight, reps)
-                    st.metric(f"組 {i+1} - 預估 1RM", f"{estimated_1rm:.1f} {unit}")
+                    st.metric(f"組 {i+1} - 預估 1RM", f"{estimated_1rm:.1f} {effective_unit}")
                 else:
                     st.write("")
             
@@ -344,7 +347,7 @@ def render_log_workout_page(user_id: str):
                 sets_data.append({
                     'set_order': i + 1,
                     'weight': weight,
-                    'unit': unit,
+                    'unit': effective_unit,  # Use effective_unit to match the actual unit used for weights
                     'reps': reps
                 })
         
