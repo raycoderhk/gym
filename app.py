@@ -170,10 +170,19 @@ def render_log_workout_page(user_id: str):
                 if st.button("📋 複製上次訓練", key=f"copy_btn_{selected_exercise}", use_container_width=True):
                     st.session_state[copy_key] = previous_workout_session
                     # Also store unit and num_sets in session state to force update
-                    st.session_state[f"{copy_key}_unit"] = previous_workout_session['unit']
+                    copied_unit = previous_workout_session['unit']
+                    st.session_state[f"{copy_key}_unit"] = copied_unit
                     st.session_state[f"{copy_key}_num_sets"] = len(previous_workout_session['sets'])
                     # Add a copy timestamp to force form widget reset
                     st.session_state[f"{copy_key}_copied_at"] = time.time()
+                    # Clear old unit widget state to force reset
+                    old_unit_key = f"unit_{selected_exercise}"
+                    if old_unit_key in st.session_state:
+                        del st.session_state[old_unit_key]
+                    # Also clear any old unit keys with timestamps
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(f"unit_{selected_exercise}_") and key != f"unit_{selected_exercise}_{int(st.session_state[f'{copy_key}_copied_at'])}":
+                            del st.session_state[key]
                     st.success("✅ 已複製上次訓練數據！")
                     st.rerun()
             else:
@@ -229,19 +238,35 @@ def render_log_workout_page(user_id: str):
     unit_key = f"{copy_key}_unit"
     copy_timestamp = st.session_state.get(f"{copy_key}_copied_at", 0)
     # Use timestamp in unit key to force reset when copying
+    # This ensures the radio button resets when we copy
     unit_widget_key = f"unit_{selected_exercise}_{int(copy_timestamp)}" if copy_timestamp > 0 else f"unit_{selected_exercise}"
     
+    # Determine the correct unit index
+    # Note: Database might store "notch" but radio button uses "notch/plate"
+    unit_map = {"kg": 0, "lb": 1, "notch/plate": 2, "notch": 2}  # Map both "notch" and "notch/plate" to index 2
+    default_unit_index = 0
+    
+    # Priority: 1) stored unit from copy, 2) copied_data unit, 3) default
     if unit_key in st.session_state:
-        # Use the stored unit from copied data
+        # Use the stored unit from copied data (highest priority)
         stored_unit = st.session_state[unit_key]
-        unit_map = {"kg": 0, "lb": 1, "notch/plate": 2}
+        # Normalize "notch" to "notch/plate" for radio button matching
+        if stored_unit == "notch":
+            stored_unit = "notch/plate"
         default_unit_index = unit_map.get(stored_unit, 0)
-    elif copied_data:
-        unit_map = {"kg": 0, "lb": 1, "notch/plate": 2}
-        default_unit_index = unit_map.get(copied_data.get('unit', 'kg'), 0)
+    elif copied_data and 'unit' in copied_data:
+        # Use unit from copied data
+        copied_unit = copied_data['unit']
+        # Normalize "notch" to "notch/plate" for radio button matching
+        if copied_unit == "notch":
+            copied_unit = "notch/plate"
+        default_unit_index = unit_map.get(copied_unit, 0)
     else:
+        # Default to kg
         default_unit_index = 0
     
+    # Create radio button with the correct index
+    # If copy_timestamp > 0, the new key will force a reset and create a new widget
     unit = st.radio("單位", ["kg", "lb", "notch/plate"], index=default_unit_index, horizontal=True, key=unit_widget_key)
     
     # If we have copied data, use the copied unit for weight options and calculations
