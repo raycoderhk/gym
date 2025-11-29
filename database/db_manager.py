@@ -102,6 +102,66 @@ def get_previous_workout(user_id: str, exercise_name: str) -> Optional[Dict]:
     return None
 
 
+def get_previous_workout_session(user_id: str, exercise_name: str) -> Optional[Dict]:
+    """
+    Get all sets from the most recent workout session for a specific exercise
+    
+    Returns:
+        Dictionary with:
+        - 'date': workout date
+        - 'unit': unit used
+        - 'sets': list of sets with weight, reps, set_order
+        - 'rpe': RPE value (if available)
+        - 'notes': notes (if available)
+        Or None if no previous workout exists
+    """
+    supabase = get_supabase()
+    
+    # First, get the most recent workout date for this exercise
+    date_result = supabase.table("workout_logs")\
+        .select("date")\
+        .eq("user_id", user_id)\
+        .eq("exercise_name", exercise_name)\
+        .order("date", desc=True)\
+        .limit(1)\
+        .execute()
+    
+    if not date_result.data:
+        return None
+    
+    last_date = date_result.data[0]['date']
+    
+    # Get all sets from that date
+    result = supabase.table("workout_logs")\
+        .select("set_order, weight, unit, reps, rpe, notes")\
+        .eq("user_id", user_id)\
+        .eq("exercise_name", exercise_name)\
+        .eq("date", last_date)\
+        .order("set_order", desc=False)\
+        .execute()
+    
+    if result.data:
+        # Get unit, rpe, and notes from first set (should be same for all sets in a session)
+        first_set = result.data[0]
+        sets = [
+            {
+                'set_order': row['set_order'],
+                'weight': row['weight'],
+                'reps': row['reps']
+            }
+            for row in result.data
+        ]
+        
+        return {
+            'date': last_date,
+            'unit': first_set['unit'],
+            'sets': sets,
+            'rpe': first_set.get('rpe'),
+            'notes': first_set.get('notes')
+        }
+    return None
+
+
 def get_exercise_history(user_id: str, exercise_name: str, days: Optional[int] = None) -> pd.DataFrame:
     """
     Get exercise history as DataFrame

@@ -20,7 +20,7 @@ from src.auth import (
 
 # Import database and utility modules
 from database.db_manager import (
-    init_database, save_workout, get_previous_workout,
+    init_database, save_workout, get_previous_workout, get_previous_workout_session,
     get_exercise_history, get_all_exercises, get_exercises_by_muscle_group,
     add_custom_exercise, get_todays_workouts, get_all_workouts,
     get_muscle_group_stats, get_pr_records, import_workout_from_csv,
@@ -152,20 +152,108 @@ def render_log_workout_page(user_id: str):
     
     # Auto-fill: Get previous workout
     previous_workout = get_previous_workout(user_id, selected_exercise)
+    previous_workout_session = get_previous_workout_session(user_id, selected_exercise)
+    
+    # Initialize session state for copied workout
+    copy_key = f"copied_workout_{selected_exercise}"
+    if copy_key not in st.session_state:
+        st.session_state[copy_key] = None
+    
+    # Display previous workout info with copy button and preview
     if previous_workout:
-        st.info(f"💡 上一次記錄 ({previous_workout['date']}): {format_weight(previous_workout['weight'], previous_workout['unit'])} × {previous_workout['reps']} 次")
+        # Summary line with copy button
+        col_info, col_button = st.columns([3, 1])
+        with col_info:
+            st.info(f"💡 上一次記錄 ({previous_workout['date']}): {format_weight(previous_workout['weight'], previous_workout['unit'])} × {previous_workout['reps']} 次")
+        with col_button:
+            if previous_workout_session:
+                if st.button("📋 複製上次訓練", key=f"copy_btn_{selected_exercise}", use_container_width=True):
+                    st.session_state[copy_key] = previous_workout_session
+                    # Also store unit and num_sets in session state to force update
+                    st.session_state[f"{copy_key}_unit"] = previous_workout_session['unit']
+                    st.session_state[f"{copy_key}_num_sets"] = len(previous_workout_session['sets'])
+                    # Add a copy timestamp to force form widget reset
+                    st.session_state[f"{copy_key}_copied_at"] = time.time()
+                    st.success("✅ 已複製上次訓練數據！")
+                    st.rerun()
+            else:
+                st.write("")  # Empty space for layout consistency
+        
+        # Detailed preview of last workout
+        if previous_workout_session:
+            with st.expander("📊 查看上次訓練詳情", expanded=False):
+                session = previous_workout_session
+                st.write(f"**日期:** {session['date']}")
+                st.write(f"**單位:** {session['unit']}")
+                
+                # Display all sets in a table format
+                sets_data = []
+                for s in session['sets']:
+                    sets_data.append({
+                        '組數': s['set_order'],
+                        '重量': format_weight(s['weight'], session['unit']),
+                        '次數': f"{s['reps']} 次"
+                    })
+                
+                if sets_data:
+                    sets_df = pd.DataFrame(sets_data)
+                    st.dataframe(sets_df, use_container_width=True, hide_index=True)
+                
+                # Display RPE and Notes if available
+                col_rpe_prev, col_notes_prev = st.columns(2)
+                with col_rpe_prev:
+                    if session.get('rpe'):
+                        st.write(f"**RPE:** {session['rpe']}/10")
+                with col_notes_prev:
+                    if session.get('notes'):
+                        st.write(f"**備註:** {session['notes']}")
     
     # Dynamic sets input table
     st.subheader("輸入訓練組數")
     
-    # Number of sets selector
-    num_sets = st.number_input("組數", min_value=1, max_value=10, value=3, step=1)
+    # Check if we have copied workout data
+    copied_data = st.session_state.get(copy_key)
     
-    # Unit selection
-    unit = st.radio("單位", ["kg", "lb", "notch/plate"], horizontal=True)
+    # Number of sets selector - use copied data if available
+    num_sets_key = f"{copy_key}_num_sets"
+    if num_sets_key in st.session_state:
+        default_num_sets = st.session_state[num_sets_key]
+    elif copied_data and 'sets' in copied_data:
+        default_num_sets = len(copied_data['sets'])
+    else:
+        default_num_sets = 3
     
-    # Get weight and reps options
-    weight_options = get_weight_options(unit)
+    num_sets = st.number_input("組數", min_value=1, max_value=10, value=default_num_sets, step=1, key=f"num_sets_{selected_exercise}")
+    
+    # Unit selection - use copied data if available
+    unit_key = f"{copy_key}_unit"
+    copy_timestamp = st.session_state.get(f"{copy_key}_copied_at", 0)
+    # Use timestamp in unit key to force reset when copying
+    unit_widget_key = f"unit_{selected_exercise}_{int(copy_timestamp)}" if copy_timestamp > 0 else f"unit_{selected_exercise}"
+    
+    if unit_key in st.session_state:
+        # Use the stored unit from copied data
+        stored_unit = st.session_state[unit_key]
+        unit_map = {"kg": 0, "lb": 1, "notch/plate": 2}
+        default_unit_index = unit_map.get(stored_unit, 0)
+    elif copied_data:
+        unit_map = {"kg": 0, "lb": 1, "notch/plate": 2}
+        default_unit_index = unit_map.get(copied_data.get('unit', 'kg'), 0)
+    else:
+        default_unit_index = 0
+    
+    unit = st.radio("單位", ["kg", "lb", "notch/plate"], index=default_unit_index, horizontal=True, key=unit_widget_key)
+    
+    # If we have copied data, ensure we use the copied unit for weight options
+    # This is important because the radio button might not have updated yet
+    effective_unit = unit
+    if copied_data and 'unit' in copied_data:
+        # Use copied unit if it exists, but only if user hasn't manually changed it
+        # For now, we'll use the radio button value, but ensure weight_options match
+        effective_unit = copied_data['unit'] if unit == copied_data['unit'] else unit
+    
+    # Get weight and reps options based on effective unit
+    weight_options = get_weight_options(effective_unit)
     reps_options = get_reps_options()
     
     # Create dynamic input form
@@ -175,22 +263,39 @@ def render_log_workout_page(user_id: str):
         # Create columns for better layout
         col1, col2, col3 = st.columns([1, 1, 2])
         
+        # Get copy timestamp to make widget keys unique when copying (already defined above for unit)
+        widget_suffix = f"_{selected_exercise}_{int(copy_timestamp)}" if copy_timestamp > 0 else f"_{selected_exercise}"
+        
         for i in range(num_sets):
             with col1:
-                weight_key = f"weight_{i}"
-                # Get default weight value
-                if previous_workout and i == 0:
+                weight_key = f"weight_{i}{widget_suffix}"
+                # Get default weight value - prioritize copied data
+                default_weight = 0.0
+                if copied_data and 'sets' in copied_data and i < len(copied_data['sets']):
+                    # Use copied data if available
+                    copied_set = copied_data['sets'][i]
+                    # Get the unit from copied data
+                    copied_unit = copied_data.get('unit', effective_unit)
+                    # Use the weight directly if units match, otherwise convert
+                    if effective_unit == copied_unit:
+                        default_weight = copied_set['weight']
+                    else:
+                        # Convert weight to current effective unit
+                        default_weight = convert_unit(copied_set['weight'], copied_unit, effective_unit)
+                elif previous_workout and i == 0:
+                    # Fallback to single previous workout value for first set
                     default_weight = previous_workout['weight']
-                    # Find closest match in options if exact match not found
-                    if default_weight not in weight_options:
-                        closest_weight = min(weight_options, key=lambda x: abs(x - default_weight))
-                        default_weight = closest_weight
-                else:
-                    default_weight = 0.0
+                    if effective_unit != previous_workout['unit']:
+                        default_weight = convert_unit(default_weight, previous_workout['unit'], effective_unit)
+                
+                # Find closest match in options if exact match not found
+                if default_weight > 0 and default_weight not in weight_options:
+                    closest_weight = min(weight_options, key=lambda x: abs(x - default_weight))
+                    default_weight = closest_weight
                 
                 # Find index for default weight
                 try:
-                    default_weight_index = weight_options.index(default_weight)
+                    default_weight_index = weight_options.index(default_weight) if default_weight > 0 else 0
                 except ValueError:
                     default_weight_index = 0
                 
@@ -203,13 +308,15 @@ def render_log_workout_page(user_id: str):
                 )
             
             with col2:
-                reps_key = f"reps_{i}"
-                # Get default reps value
-                if previous_workout and i == 0:
+                reps_key = f"reps_{i}{widget_suffix}"
+                # Get default reps value - prioritize copied data
+                default_reps = 0
+                if copied_data and 'sets' in copied_data and i < len(copied_data['sets']):
+                    default_reps = copied_data['sets'][i]['reps']
+                elif previous_workout and i == 0:
                     default_reps = previous_workout['reps']
-                    default_reps = default_reps if default_reps in reps_options else 0
-                else:
-                    default_reps = 0
+                
+                default_reps = default_reps if default_reps in reps_options else 0
                 
                 # Find index for default reps
                 try:
@@ -241,14 +348,16 @@ def render_log_workout_page(user_id: str):
                     'reps': reps
                 })
         
-        # RPE and Notes
+        # RPE and Notes - use copied data if available
         col_rpe, col_notes = st.columns(2)
         with col_rpe:
-            rpe = st.slider("RPE (自覺強度)", min_value=1, max_value=10, value=7, step=1,
-                          help="1=非常輕鬆, 10=極限")
+            default_rpe = copied_data['rpe'] if copied_data and copied_data.get('rpe') else 7
+            rpe = st.slider("RPE (自覺強度)", min_value=1, max_value=10, value=int(default_rpe), step=1,
+                          help="1=非常輕鬆, 10=極限", key=f"rpe{widget_suffix}")
         with col_notes:
-            notes = st.text_area("備註 (選填)", height=100,
-                               placeholder="例如：左肩有點卡、Notch 4 感覺很輕...")
+            default_notes = copied_data['notes'] if copied_data and copied_data.get('notes') else ""
+            notes = st.text_area("備註 (選填)", height=100, value=default_notes,
+                               placeholder="例如：左肩有點卡、Notch 4 感覺很輕...", key=f"notes{widget_suffix}")
         
         # Submit button
         submitted = st.form_submit_button("💾 儲存訓練", type="primary")
@@ -271,6 +380,9 @@ def render_log_workout_page(user_id: str):
                         save_workout(user_id, workout_date, selected_exercise, sets_data, rpe, notes)
                         st.success(f"✅ 已儲存 {len(sets_data)} 組 {selected_exercise} 訓練記錄！")
                         st.balloons()
+                        # Clear copied data after successful save
+                        if copy_key in st.session_state:
+                            st.session_state[copy_key] = None
                     except Exception as e:
                         st.error(f"儲存失敗: {str(e)}")
     
