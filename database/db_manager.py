@@ -147,12 +147,26 @@ def get_all_exercises(user_id: str) -> List[Dict]:
     """
     supabase = get_supabase()
     
-    result = supabase.table("exercises")\
-        .select("id, name, muscle_group, exercise_type, execution_steps")\
-        .eq("user_id", user_id)\
-        .order("muscle_group")\
-        .order("name")\
-        .execute()
+    try:
+        # Try to select with execution_steps (if column exists)
+        result = supabase.table("exercises")\
+            .select("id, name, muscle_group, exercise_type, execution_steps")\
+            .eq("user_id", user_id)\
+            .order("muscle_group")\
+            .order("name")\
+            .execute()
+    except Exception:
+        # Fallback: select without execution_steps if column doesn't exist yet
+        result = supabase.table("exercises")\
+            .select("id, name, muscle_group, exercise_type")\
+            .eq("user_id", user_id)\
+            .order("muscle_group")\
+            .order("name")\
+            .execute()
+        # Add None for execution_steps to maintain consistent structure
+        if result.data:
+            for row in result.data:
+                row['execution_steps'] = None
     
     return result.data if result.data else []
 
@@ -248,12 +262,25 @@ def get_exercise_details(user_id: str, exercise_name: str) -> Optional[Dict]:
     """
     supabase = get_supabase()
     
-    result = supabase.table("exercises")\
-        .select("id, name, muscle_group, exercise_type, execution_steps")\
-        .eq("user_id", user_id)\
-        .eq("name", exercise_name)\
-        .limit(1)\
-        .execute()
+    try:
+        # Try to select with execution_steps (if column exists)
+        result = supabase.table("exercises")\
+            .select("id, name, muscle_group, exercise_type, execution_steps")\
+            .eq("user_id", user_id)\
+            .eq("name", exercise_name)\
+            .limit(1)\
+            .execute()
+    except Exception:
+        # Fallback: select without execution_steps if column doesn't exist yet
+        result = supabase.table("exercises")\
+            .select("id, name, muscle_group, exercise_type")\
+            .eq("user_id", user_id)\
+            .eq("name", exercise_name)\
+            .limit(1)\
+            .execute()
+        # Add None for execution_steps to maintain consistent structure
+        if result.data and len(result.data) > 0:
+            result.data[0]['execution_steps'] = None
     
     if result.data and len(result.data) > 0:
         return result.data[0]
