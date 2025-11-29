@@ -10,6 +10,14 @@ import time
 import plotly.express as px
 import plotly.graph_objects as go
 
+# Import authentication module
+from src.auth import (
+    get_supabase_client, get_cookie_manager, ensure_cookies_loaded,
+    continue_cookie_setting_if_needed, _clear_cookie_cache,
+    handle_auth_callback, ensure_authentication, get_current_user,
+    login_with_email, signup_with_email, login_with_google, logout
+)
+
 # Import database and utility modules
 from database.db_manager import (
     init_database, save_workout, get_previous_workout,
@@ -25,7 +33,7 @@ from utils.calculations import (
 from utils.helpers import (
     get_muscle_groups, get_exercise_types, format_weight,
     get_default_exercises, validate_input, get_weight_options, get_reps_options,
-    is_assisted_exercise
+    is_assisted_exercise, infer_exercise_type
 )
 
 # Page configuration
@@ -36,49 +44,51 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize database
-if 'db_initialized' not in st.session_state:
-    init_database()
-    st.session_state.db_initialized = True
-    # Initialize default exercises if database is empty
-    exercises = get_all_exercises()
-    if not exercises:
-        from utils.helpers import infer_exercise_type
-        default_exercises = get_default_exercises()
-        for muscle_group, exercise_list in default_exercises.items():
-            for exercise_name in exercise_list:
-                # Use infer_exercise_type for better type detection
-                exercise_type = infer_exercise_type(exercise_name)
-                add_custom_exercise(exercise_name, muscle_group, exercise_type)
 
-
-# Sidebar navigation
-st.sidebar.title("🏋️ My Gym Tracker")
-page = st.sidebar.selectbox(
-    "導航",
-    ["記錄訓練", "進度儀表板", "動作庫管理", "資料匯入"]
-)
-
-# Bodyweight setting for assisted exercises
-st.sidebar.markdown("---")
-st.sidebar.markdown("### ⚙️ 設定")
-if 'bodyweight' not in st.session_state:
-    st.session_state.bodyweight = 135.0  # Default 135 lbs
-
-bodyweight = st.sidebar.number_input(
-    "體重 (用於計算輔助動作的有效重量) (lb)",
-    min_value=0.0,
-    value=st.session_state.bodyweight,
-    step=1.0,
-    help="此數值用於計算輔助動作的有效重量 (有效重量 = 體重 - 輔助重量)"
-)
-st.session_state.bodyweight = bodyweight
+def render_login_page():
+    """Render the login/signup page"""
+    st.title("🏋️ My Gym Tracker")
+    st.markdown("### 請登入以繼續")
+    
+    tab_login, tab_signup = st.tabs(["登入", "註冊"])
+    
+    with tab_login:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_password")
+        
+        if st.button("登入", type="primary", use_container_width=True):
+            if login_with_email(email, password):
+                st.success("登入成功！")
+                st.rerun()
+        
+        # Google OAuth
+        st.markdown("---")
+        google_auth_url = login_with_google()
+        if google_auth_url:
+            st.link_button("🔒 使用 Google 登入", google_auth_url, use_container_width=True)
+        else:
+            st.warning("Google 登入未設定。請檢查環境變數設定。")
+    
+    with tab_signup:
+        new_email = st.text_input("Email", key="signup_email")
+        new_password = st.text_input("Password", type="password", key="signup_password")
+        confirm_password = st.text_input("確認 Password", type="password", key="signup_confirm_password")
+        
+        if st.button("註冊", type="primary", use_container_width=True):
+            if new_password != confirm_password:
+                st.error("密碼不一致")
+            elif len(new_password) < 6:
+                st.error("密碼長度至少需要 6 個字元")
+            else:
+                if signup_with_email(new_email, new_password):
+                    st.success("註冊成功！您已自動登入。")
+                    st.rerun()
 
 # ============================================================================
 # PAGE 1: LOG WORKOUT (記錄訓練)
 # ============================================================================
 
-def render_log_workout_page():
+def render_log_workout_page(user_id: str):
     """Render the Log Workout page"""
     st.header("📝 記錄訓練")
     
@@ -94,7 +104,7 @@ def render_log_workout_page():
     selected_muscle_group = st.selectbox("選擇肌肉群", muscle_groups)
     
     # Get exercises for selected muscle group
-    exercises = get_exercises_by_muscle_group(selected_muscle_group)
+    exercises = get_exercises_by_muscle_group(user_id, selected_muscle_group)
     if not exercises:
         st.info(f"「{selected_muscle_group}」目前沒有動作，請先在「動作庫管理」頁面新增動作。")
         return
@@ -102,7 +112,7 @@ def render_log_workout_page():
     selected_exercise = st.selectbox("選擇動作", exercises)
     
     # Auto-fill: Get previous workout
-    previous_workout = get_previous_workout(selected_exercise)
+    previous_workout = get_previous_workout(user_id, selected_exercise)
     if previous_workout:
         st.info(f"💡 上一次記錄 ({previous_workout['date']}): {format_weight(previous_workout['weight'], previous_workout['unit'])} × {previous_workout['reps']} 次")
     
@@ -219,7 +229,7 @@ def render_log_workout_page():
                 
                 if valid:
                     try:
-                        save_workout(workout_date, selected_exercise, sets_data, rpe, notes)
+                        save_workout(user_id, workout_date, selected_exercise, sets_data, rpe, notes)
                         st.success(f"✅ 已儲存 {len(sets_data)} 組 {selected_exercise} 訓練記錄！")
                         st.balloons()
                     except Exception as e:
@@ -260,7 +270,7 @@ def render_log_workout_page():
     
     # Display today's workouts
     st.subheader(f"📋 {workout_date} 的訓練記錄")
-    today_workouts = get_todays_workouts(workout_date)
+    today_workouts = get_todays_workouts(user_id, workout_date)
     
     if not today_workouts.empty:
         # Format display
@@ -402,17 +412,17 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
     return session_df
 
 
-def render_progress_dashboard_page():
+def render_progress_dashboard_page(user_id: str):
     """Render the Progress Dashboard page"""
     st.header("📈 進度儀表板")
     
     # Get all exercises with entry counts
-    all_exercises = get_all_exercises()
+    all_exercises = get_all_exercises(user_id)
     if not all_exercises:
         st.info("還沒有動作記錄，請先在「記錄訓練」頁面開始記錄。")
         return
     
-    entry_counts = get_exercise_entry_counts()
+    entry_counts = get_exercise_entry_counts(user_id)
     
     # Group exercises by muscle group
     exercises_by_group = {}
@@ -515,7 +525,7 @@ def render_progress_dashboard_page():
     all_session_data = []
     
     for exercise_name in selected_exercises:
-        history_df = get_exercise_history(exercise_name)
+        history_df = get_exercise_history(user_id, exercise_name)
         
         if history_df.empty:
             continue
@@ -606,7 +616,7 @@ def render_progress_dashboard_page():
     # PR Wall for selected exercises
     st.subheader("🏆 個人紀錄 (PR Wall)")
     
-    pr_records = get_pr_records()
+    pr_records = get_pr_records(user_id)
     
     # Create a more compact grid layout (3 columns)
     num_cols = 3
@@ -745,7 +755,7 @@ def render_progress_dashboard_page():
     
     time_range = st.selectbox("時間範圍", [7, 30, 90, 365], index=1, format_func=lambda x: f"過去 {x} 天")
     
-    muscle_stats = get_muscle_group_stats(days=time_range)
+    muscle_stats = get_muscle_group_stats(user_id, days=time_range)
     
     if not muscle_stats.empty:
         # Create pie chart
@@ -769,7 +779,7 @@ def render_progress_dashboard_page():
 # PAGE 3: LIBRARY MANAGER (動作庫管理)
 # ============================================================================
 
-def render_library_manager_page():
+def render_library_manager_page(user_id: str):
     """Render the Library Manager page"""
     st.header("📚 動作庫管理")
     
@@ -792,17 +802,21 @@ def render_library_manager_page():
             if not exercise_name:
                 st.error("請輸入動作名稱")
             else:
-                success = add_custom_exercise(exercise_name, muscle_group, exercise_type)
+                success = add_custom_exercise(user_id, exercise_name, muscle_group, exercise_type)
                 if success:
                     st.success(f"✅ 已新增動作: {exercise_name}")
                     st.balloons()
                 else:
                     st.error(f"動作「{exercise_name}」已存在")
     
+    # Get user_id from session
+    user = get_current_user()
+    user_id = user['id'] if user else None
+    
     # Display exercise library
     st.subheader("動作庫列表")
     
-    all_exercises = get_all_exercises()
+    all_exercises = get_all_exercises(user_id)
     
     if all_exercises:
         # Group by muscle group
@@ -828,7 +842,7 @@ def render_library_manager_page():
 # PAGE 4: DATA IMPORT (資料匯入)
 # ============================================================================
 
-def render_data_import_page():
+def render_data_import_page(user_id: str):
     """Render the Data Import page"""
     st.header("📥 資料匯入")
     
@@ -876,7 +890,7 @@ def render_data_import_page():
                 # Import button
                 if st.button("🚀 開始匯入", type="primary"):
                     with st.spinner("正在匯入資料..."):
-                        success_count, error_count, error_messages = import_workout_from_csv(df)
+                        success_count, error_count, error_messages = import_workout_from_csv(user_id, df)
                     
                     # Display results
                     if success_count > 0:
@@ -903,17 +917,96 @@ def render_data_import_page():
 # MAIN APP ROUTING
 # ============================================================================
 
-if page == "記錄訓練":
-    render_log_workout_page()
-elif page == "進度儀表板":
-    render_progress_dashboard_page()
-elif page == "動作庫管理":
-    render_library_manager_page()
-elif page == "資料匯入":
-    render_data_import_page()
+def main():
+    """Main application entry point with authentication"""
+    # 1. Clear cookie cache
+    _clear_cookie_cache()
+    
+    # 2. Continue cookie setting if in progress
+    if continue_cookie_setting_if_needed():
+        st.rerun()
+    
+    # 3. Ensure cookies are loaded (wait for component)
+    if not ensure_cookies_loaded():
+        st.stop()
+    
+    # 4. Handle OAuth callback
+    handle_auth_callback()
+    
+    # 5. Check authentication
+    if not ensure_authentication():
+        render_login_page()
+        return
+    
+    # 6. Get user ID
+    user = get_current_user()
+    if not user:
+        render_login_page()
+        return
+    
+    user_id = user['id']
+    
+    # 7. Initialize database (verify tables exist)
+    if 'db_initialized' not in st.session_state:
+        init_database(user_id)
+        st.session_state.db_initialized = True
+        # Initialize default exercises if database is empty
+        exercises = get_all_exercises(user_id)
+        if not exercises:
+            default_exercises = get_default_exercises()
+            for muscle_group, exercise_list in default_exercises.items():
+                for exercise_name in exercise_list:
+                    # Use infer_exercise_type for better type detection
+                    exercise_type = infer_exercise_type(exercise_name)
+                    add_custom_exercise(user_id, exercise_name, muscle_group, exercise_type)
+    
+    # 8. Sidebar navigation
+    st.sidebar.title("🏋️ My Gym Tracker")
+    
+    # User info and logout
+    st.sidebar.markdown(f"**使用者:** {user.get('email', 'Unknown')}")
+    if st.sidebar.button("登出", use_container_width=True):
+        logout()
+        st.rerun()
+    
+    st.sidebar.markdown("---")
+    
+    page = st.sidebar.selectbox(
+        "導航",
+        ["記錄訓練", "進度儀表板", "動作庫管理", "資料匯入"]
+    )
+    
+    # Bodyweight setting for assisted exercises
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### ⚙️ 設定")
+    if 'bodyweight' not in st.session_state:
+        st.session_state.bodyweight = 135.0  # Default 135 lbs
+    
+    bodyweight = st.sidebar.number_input(
+        "體重 (用於計算輔助動作的有效重量) (lb)",
+        min_value=0.0,
+        value=st.session_state.bodyweight,
+        step=1.0,
+        help="此數值用於計算輔助動作的有效重量 (有效重量 = 體重 - 輔助重量)"
+    )
+    st.session_state.bodyweight = bodyweight
+    
+    # 9. Route to appropriate page
+    if page == "記錄訓練":
+        render_log_workout_page(user_id)
+    elif page == "進度儀表板":
+        render_progress_dashboard_page(user_id)
+    elif page == "動作庫管理":
+        render_library_manager_page(user_id)
+    elif page == "資料匯入":
+        render_data_import_page(user_id)
+    
+    # Footer
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**My Gym Tracker** v1.0")
+    st.sidebar.markdown("記錄每一次訓練，見證每一次進步 💪")
 
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.markdown("**My Gym Tracker** v1.0")
-st.sidebar.markdown("記錄每一次訓練，見證每一次進步 💪")
+
+if __name__ == "__main__":
+    main()
 
