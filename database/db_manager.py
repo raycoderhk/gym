@@ -988,3 +988,42 @@ def delete_workout_session(user_id: str, workout_date: date, exercise_name: str)
     except Exception as e:
         print(f"Error deleting workout session: {e}")
         return 0
+
+
+def delete_all_exercise_workouts(user_id: str, exercise_name: str) -> int:
+    """
+    Delete all workout logs for a specific exercise (across all dates).
+
+    Args:
+        user_id: User UUID
+        exercise_name: Name of the exercise
+
+    Returns:
+        Number of deleted workout logs (0 if none found or user doesn't own them)
+    """
+    supabase = get_supabase()
+
+    try:
+        # First get IDs to know how many rows will be deleted
+        result = supabase.table("workout_logs")\
+            .select("id")\
+            .eq("user_id", user_id)\
+            .eq("exercise_name", exercise_name)\
+            .execute()
+
+        if not result.data:
+            return 0
+
+        set_ids = [row["id"] for row in result.data]
+
+        # Delete all logs for this exercise
+        supabase.table("workout_logs")\
+            .delete()\
+            .eq("user_id", user_id)\
+            .eq("exercise_name", exercise_name)\
+            .execute()
+
+        return len(set_ids)
+    except Exception as e:
+        print(f"Error deleting all workouts for exercise '{exercise_name}': {e}")
+        return 0

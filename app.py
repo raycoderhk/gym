@@ -536,9 +536,21 @@ def render_log_workout_page(user_id: str):
         # RPE and Notes - use copied data if available
         col_rpe, col_notes = st.columns(2)
         with col_rpe:
-            default_rpe = copied_data['rpe'] if copied_data and copied_data.get('rpe') else 7
-            rpe = st.slider("RPE (自覺強度)", min_value=1, max_value=10, value=int(default_rpe), step=1,
-                          help="1=非常輕鬆, 10=極限", key=f"rpe{widget_suffix}")
+            # Safely determine default RPE (handle None / NaN values)
+            raw_rpe = copied_data.get('rpe') if copied_data else None
+            if isinstance(raw_rpe, (int, float)) and not pd.isna(raw_rpe):
+                default_rpe = int(raw_rpe)
+            else:
+                default_rpe = 7
+            rpe = st.slider(
+                "RPE (自覺強度)",
+                min_value=1,
+                max_value=10,
+                value=default_rpe,
+                step=1,
+                help="1=非常輕鬆, 10=極限",
+                key=f"rpe{widget_suffix}",
+            )
         with col_notes:
             default_notes = copied_data['notes'] if copied_data and copied_data.get('notes') else ""
             notes = st.text_area("備註 (選填)", height=100, value=default_notes,
@@ -751,11 +763,16 @@ def render_log_workout_page(user_id: str):
                             
                             col_rpe_edit, col_notes_edit = st.columns(2)
                             with col_rpe_edit:
+                                # Safely determine default RPE for this set (handle None / NaN)
+                                if isinstance(rpe, (int, float)) and not pd.isna(rpe):
+                                    default_rpe = int(rpe)
+                                else:
+                                    default_rpe = 7
                                 st.slider(
                                     "RPE (自覺強度)",
                                     min_value=1,
                                     max_value=10,
-                                    value=int(rpe) if rpe else 7,
+                                    value=default_rpe,
                                     step=1,
                                     key=f"edit_all_rpe_{set_id}",
                                     help="1=非常輕鬆, 10=極限"
@@ -897,11 +914,16 @@ def render_log_workout_page(user_id: str):
                                 
                                 col_rpe_edit, col_notes_edit = st.columns(2)
                                 with col_rpe_edit:
+                                    # Safely determine default RPE for this set (handle None / NaN)
+                                    if isinstance(rpe, (int, float)) and not pd.isna(rpe):
+                                        default_rpe = int(rpe)
+                                    else:
+                                        default_rpe = 7
                                     new_rpe = st.slider(
                                         "RPE (自覺強度)",
                                         min_value=1,
                                         max_value=10,
-                                        value=int(rpe) if rpe else 7,
+                                        value=default_rpe,
                                         step=1,
                                         key=f"edit_rpe_{set_id}",
                                         help="1=非常輕鬆, 10=極限"
@@ -1214,15 +1236,26 @@ def render_progress_dashboard_page(user_id: str):
     # Metric selection
     metric = st.radio(
         "選擇顯示指標",
-        ["最大重量 (Max Weight)", "總容量 (Total Volume)", "預估 1RM (Estimated 1RM)"],
-        horizontal=True
+        [
+            "最大重量 & 預估 1RM (Max Weight & Estimated 1RM)",
+            "最大重量 (Max Weight)",
+            "總容量 (Total Volume)",
+            "預估 1RM (Estimated 1RM)",
+        ],
+        horizontal=True,
     )
     
     # Determine y column and label
-    if metric == "最大重量 (Max Weight)":
+    if metric == "最大重量 & 預估 1RM (Max Weight & Estimated 1RM)":
+        # Combined view: show both Max Weight and Estimated 1RM on the same chart
         y_col = 'max_weight'
         y_label = '最大重量'
-        show_combined = True  # Show both max weight and 1RM together
+        show_combined = True
+    elif metric == "最大重量 (Max Weight)":
+        # Pure Max Weight view: only show max_weight
+        y_col = 'max_weight'
+        y_label = '最大重量'
+        show_combined = False
     elif metric == "總容量 (Total Volume)":
         y_col = 'total_volume'
         y_label = '總容量 (kg)'
