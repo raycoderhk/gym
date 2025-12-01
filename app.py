@@ -785,19 +785,21 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
                     from utils.calculations import convert_unit
                     bodyweight_in_unit = convert_unit(bodyweight, 'lb', primary_unit)
                     
-                    # Calculate effective weights
-                    effective_weights = [bodyweight_in_unit - s['weight'] for s in session_sets]
-                    max_weight = max(effective_weights)
-                    max_reps = max(s['reps'] for s in session_sets)
+                    # Calculate effective weights and find the set with max weight
+                    max_set = max(session_sets, key=lambda s: bodyweight_in_unit - s['weight'])
+                    max_weight = bodyweight_in_unit - max_set['weight']
+                    max_reps = max_set['reps']  # Use reps from the same set as max weight
                     total_volume = sum(calculate_total_volume(bodyweight_in_unit - s['weight'], s['reps'], primary_unit) for s in session_sets)
-                    # Calculate maximum 1RM instead of average
-                    max_1rm = max(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets)
+                    # Calculate 1RM using the weight and reps from the same set that had max weight
+                    max_1rm = calculate_1rm(max_weight, max_reps)
                 else:
-                    max_weight = max(s['weight'] for s in session_sets)
-                    max_reps = max(s['reps'] for s in session_sets)
+                    # Find the set with max weight
+                    max_set = max(session_sets, key=lambda s: s['weight'])
+                    max_weight = max_set['weight']
+                    max_reps = max_set['reps']  # Use reps from the same set as max weight
                     total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
-                    # Calculate maximum 1RM instead of average
-                    max_1rm = max(calculate_1rm(s['weight'], s['reps']) for s in session_sets)
+                    # Calculate 1RM using the weight and reps from the same set that had max weight
+                    max_1rm = calculate_1rm(max_weight, max_reps)
                     
                     # Get primary unit for this session (most common unit)
                     session_units = [s['unit'] for s in session_sets]
@@ -834,18 +836,21 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
             from utils.calculations import convert_unit
             bodyweight_in_unit = convert_unit(bodyweight, 'lb', primary_unit)
             
-            effective_weights = [bodyweight_in_unit - s['weight'] for s in session_sets]
-            max_weight = max(effective_weights)
-            max_reps = max(s['reps'] for s in session_sets)
+            # Find the set with max effective weight
+            max_set = max(session_sets, key=lambda s: bodyweight_in_unit - s['weight'])
+            max_weight = bodyweight_in_unit - max_set['weight']
+            max_reps = max_set['reps']  # Use reps from the same set as max weight
             total_volume = sum(calculate_total_volume(bodyweight_in_unit - s['weight'], s['reps'], primary_unit) for s in session_sets)
-            # Calculate maximum 1RM instead of average
-            max_1rm = max(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets)
+            # Calculate 1RM using the weight and reps from the same set that had max weight
+            max_1rm = calculate_1rm(max_weight, max_reps)
         else:
-            max_weight = max(s['weight'] for s in session_sets)
-            max_reps = max(s['reps'] for s in session_sets)
+            # Find the set with max weight
+            max_set = max(session_sets, key=lambda s: s['weight'])
+            max_weight = max_set['weight']
+            max_reps = max_set['reps']  # Use reps from the same set as max weight
             total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
-            # Calculate maximum 1RM instead of average
-            max_1rm = max(calculate_1rm(s['weight'], s['reps']) for s in session_sets)
+            # Calculate 1RM using the weight and reps from the same set that had max weight
+            max_1rm = calculate_1rm(max_weight, max_reps)
             
             session_units = [s['unit'] for s in session_sets]
             primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
