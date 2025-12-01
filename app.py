@@ -968,12 +968,15 @@ def render_progress_dashboard_page(user_id: str):
     if metric == "最大重量 (Max Weight)":
         y_col = 'max_weight'
         y_label = '最大重量'
+        show_combined = True  # Show both max weight and 1RM together
     elif metric == "總容量 (Total Volume)":
         y_col = 'total_volume'
         y_label = '總容量 (kg)'
+        show_combined = False
     else:
         y_col = 'max_1rm'
         y_label = '預估 1RM (最大值)'
+        show_combined = False
     
     # Get data for all selected exercises
     all_session_data = []
@@ -1016,22 +1019,86 @@ def render_progress_dashboard_page(user_id: str):
         st.plotly_chart(fig, use_container_width=True)
     else:
         # For max weight, group by unit and show separate charts
+        # If show_combined is True, also show 1RM on the same chart
         st.subheader("📊 趨勢圖表（依單位分組）")
         
         # Get unique units from the data
         if 'unit' not in combined_df.columns:
             # Fallback: show all together if unit info is missing
             st.subheader("📊 趨勢圖表")
-            fig = px.line(
-                combined_df,
-                x='date',
-                y=y_col,
-                color='exercise',
-                markers=True,
-                title=f"{y_label} 趨勢比較",
-                labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
-            )
-            fig.update_layout(height=500, hovermode='x unified')
+            if show_combined:
+                # Create chart with both max_weight and max_1rm
+                fig = px.line(
+                    combined_df,
+                    x='date',
+                    y='max_weight',
+                    color='exercise',
+                    markers=True,
+                    title=f"最大重量 & 預估 1RM 趨勢比較",
+                    labels={'date': '日期', 'max_weight': '最大重量', 'exercise': '動作'},
+                    custom_data=['max_reps', 'unit']
+                )
+                # Update hovertemplate for max_weight traces to include reps
+                for i, trace in enumerate(fig.data):
+                    if trace.name and '(1RM)' not in trace.name:
+                        # This is a max_weight trace, update its hovertemplate
+                        exercise_name = trace.name
+                        # Get the data for this exercise to access max_reps
+                        ex_df = combined_df[combined_df['exercise'] == exercise_name]
+                        # Update hovertemplate to show weight and reps
+                        trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} %{{customdata[1]}}<br>次數: %{{customdata[0]}}<extra></extra>'
+                
+                # Add 1RM as secondary line with different style
+                for exercise_name in combined_df['exercise'].unique():
+                    ex_df = combined_df[combined_df['exercise'] == exercise_name]
+                    fig.add_scatter(
+                        x=ex_df['date'],
+                        y=ex_df['max_1rm'],
+                        mode='lines+markers',
+                        name=f"{exercise_name} (1RM)",
+                        line=dict(dash='dash', width=2),
+                        marker=dict(symbol='diamond', size=8),
+                        hovertemplate=f'<b>{exercise_name} (1RM)</b><br>日期: %{{x}}<br>預估 1RM: %{{y:.1f}}<extra></extra>'
+                    )
+                fig.update_layout(
+                    height=500,
+                    hovermode='x unified',
+                    yaxis_title='重量 / 預估 1RM',
+                    legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+                )
+            else:
+                # Check if showing max_weight to include reps in tooltip
+                if y_col == 'max_weight':
+                    fig = px.line(
+                        combined_df,
+                        x='date',
+                        y=y_col,
+                        color='exercise',
+                        markers=True,
+                        title=f"{y_label} 趨勢比較",
+                        labels={'date': '日期', y_col: y_label, 'exercise': '動作'},
+                        custom_data=['max_reps', 'unit']
+                    )
+                    # Update hovertemplate for max_weight traces to include reps
+                    for i, trace in enumerate(fig.data):
+                        if trace.name:
+                            exercise_name = trace.name
+                            # Get unit from the data
+                            ex_df = combined_df[combined_df['exercise'] == exercise_name]
+                            if not ex_df.empty:
+                                unit = ex_df.iloc[0]['unit'] if 'unit' in ex_df.columns else ''
+                                trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit}<br>次數: %{{customdata[0]}}<extra></extra>'
+                else:
+                    fig = px.line(
+                        combined_df,
+                        x='date',
+                        y=y_col,
+                        color='exercise',
+                        markers=True,
+                        title=f"{y_label} 趨勢比較",
+                        labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
+                    )
+                fig.update_layout(height=500, hovermode='x unified')
             st.plotly_chart(fig, use_container_width=True)
         else:
             # Group by unit
@@ -1055,16 +1122,73 @@ def render_progress_dashboard_page(user_id: str):
                 
                 st.markdown(f"### {unit_display}")
                 
-                fig = px.line(
-                    unit_df,
-                    x='date',
-                    y=y_col,
-                    color='exercise',
-                    markers=True,
-                    title=f"{y_label} 趨勢比較 - {unit_display}",
-                    labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'}
-                )
-                fig.update_layout(height=400, hovermode='x unified')
+                if show_combined:
+                    # Create chart with both max_weight and max_1rm
+                    fig = px.line(
+                        unit_df,
+                        x='date',
+                        y='max_weight',
+                        color='exercise',
+                        markers=True,
+                        title=f"最大重量 & 預估 1RM 趨勢比較 - {unit_display}",
+                        labels={'date': '日期', 'max_weight': f'最大重量 ({unit})', 'exercise': '動作'},
+                        custom_data=['max_reps', 'unit']
+                    )
+                    # Update hovertemplate for max_weight traces to include reps
+                    for i, trace in enumerate(fig.data):
+                        if trace.name and '(1RM)' not in trace.name:
+                            # This is a max_weight trace, update its hovertemplate
+                            exercise_name = trace.name
+                            # Update hovertemplate to show weight and reps
+                            trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit}<br>次數: %{{customdata[0]}}<extra></extra>'
+                    
+                    # Add 1RM as secondary line with different style for each exercise
+                    for exercise_name in unit_df['exercise'].unique():
+                        ex_df = unit_df[unit_df['exercise'] == exercise_name]
+                        fig.add_scatter(
+                            x=ex_df['date'],
+                            y=ex_df['max_1rm'],
+                            mode='lines+markers',
+                            name=f"{exercise_name} (1RM)",
+                            line=dict(dash='dash', width=2),
+                            marker=dict(symbol='diamond', size=8),
+                            hovertemplate=f'<b>{exercise_name} (1RM)</b><br>日期: %{{x}}<br>預估 1RM: %{{y:.1f}} {unit}<extra></extra>'
+                        )
+                    fig.update_layout(
+                        height=400,
+                        hovermode='x unified',
+                        yaxis_title=f'重量 / 預估 1RM ({unit})',
+                        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+                    )
+                else:
+                    # Check if showing max_weight to include reps in tooltip
+                    if y_col == 'max_weight':
+                        fig = px.line(
+                            unit_df,
+                            x='date',
+                            y=y_col,
+                            color='exercise',
+                            markers=True,
+                            title=f"{y_label} 趨勢比較 - {unit_display}",
+                            labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'},
+                            custom_data=['max_reps', 'unit']
+                        )
+                        # Update hovertemplate for max_weight traces to include reps
+                        for i, trace in enumerate(fig.data):
+                            if trace.name:
+                                exercise_name = trace.name
+                                trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit}<br>次數: %{{customdata[0]}}<extra></extra>'
+                    else:
+                        fig = px.line(
+                            unit_df,
+                            x='date',
+                            y=y_col,
+                            color='exercise',
+                            markers=True,
+                            title=f"{y_label} 趨勢比較 - {unit_display}",
+                            labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'}
+                        )
+                    fig.update_layout(height=400, hovermode='x unified')
                 st.plotly_chart(fig, use_container_width=True)
     
     # PR Wall for selected exercises
