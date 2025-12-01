@@ -162,6 +162,80 @@ def get_previous_workout_session(user_id: str, exercise_name: str) -> Optional[D
     return None
 
 
+def get_recent_workout_sessions(user_id: str, exercise_name: str, limit: int = 3) -> List[Dict]:
+    """
+    Get the last N workout sessions for a specific exercise
+    
+    Args:
+        user_id: User UUID
+        exercise_name: Name of the exercise
+        limit: Number of recent sessions to return (default: 3)
+    
+    Returns:
+        List of dictionaries, each containing:
+        - 'date': workout date
+        - 'unit': unit used
+        - 'sets': list of sets with weight, reps, set_order
+        - 'rpe': RPE value (if available)
+        - 'notes': notes (if available)
+    """
+    supabase = get_supabase()
+    
+    # Get unique workout dates for this exercise, ordered by date descending
+    date_result = supabase.table("workout_logs")\
+        .select("date")\
+        .eq("user_id", user_id)\
+        .eq("exercise_name", exercise_name)\
+        .order("date", desc=True)\
+        .execute()
+    
+    if not date_result.data:
+        return []
+    
+    # Get unique dates
+    unique_dates = []
+    seen_dates = set()
+    for row in date_result.data:
+        workout_date = row['date']
+        if workout_date not in seen_dates:
+            unique_dates.append(workout_date)
+            seen_dates.add(workout_date)
+            if len(unique_dates) >= limit:
+                break
+    
+    # Get all sets for each date
+    sessions = []
+    for workout_date in unique_dates:
+        result = supabase.table("workout_logs")\
+            .select("set_order, weight, unit, reps, rpe, notes")\
+            .eq("user_id", user_id)\
+            .eq("exercise_name", exercise_name)\
+            .eq("date", workout_date)\
+            .order("set_order", desc=False)\
+            .execute()
+        
+        if result.data:
+            first_set = result.data[0]
+            sets = [
+                {
+                    'set_order': row['set_order'],
+                    'weight': row['weight'],
+                    'reps': row['reps']
+                }
+                for row in result.data
+            ]
+            
+            sessions.append({
+                'date': workout_date,
+                'unit': first_set['unit'],
+                'sets': sets,
+                'rpe': first_set.get('rpe'),
+                'notes': first_set.get('notes')
+            })
+    
+    return sessions
+
+
 def get_exercise_history(user_id: str, exercise_name: str, days: Optional[int] = None) -> pd.DataFrame:
     """
     Get exercise history as DataFrame
@@ -254,6 +328,37 @@ def get_exercise_entry_counts(user_id: str) -> Dict[str, int]:
             counts[exercise_name] = counts.get(exercise_name, 0) + 1
     
     return counts
+
+
+def get_exercise_workout_counts(user_id: str) -> Dict[str, int]:
+    """
+    Get workout session count for each exercise (counts unique dates per exercise)
+    
+    Returns:
+        Dictionary with exercise names as keys and workout session counts as values
+    """
+    supabase = get_supabase()
+    
+    # Get all workout logs with date and exercise_name
+    result = supabase.table("workout_logs")\
+        .select("exercise_name, date")\
+        .eq("user_id", user_id)\
+        .execute()
+    
+    # Count unique date+exercise combinations (workout sessions)
+    session_counts = {}
+    if result.data:
+        seen_sessions = set()
+        for row in result.data:
+            exercise_name = row['exercise_name']
+            workout_date = row['date']
+            session_key = (exercise_name, workout_date)
+            
+            if session_key not in seen_sessions:
+                seen_sessions.add(session_key)
+                session_counts[exercise_name] = session_counts.get(exercise_name, 0) + 1
+    
+    return session_counts
 
 
 def get_exercises_by_muscle_group(user_id: str, muscle_group: str) -> List[str]:
@@ -379,12 +484,12 @@ def get_todays_workouts(user_id: str, workout_date: date) -> pd.DataFrame:
     Get all workouts for a specific date
     
     Returns:
-        DataFrame with today's workouts
+        DataFrame with today's workouts (includes id field for update/delete operations)
     """
     supabase = get_supabase()
     
     result = supabase.table("workout_logs")\
-        .select("exercise_name, set_order, weight, unit, reps, rpe, notes")\
+        .select("id, exercise_name, set_order, weight, unit, reps, rpe, notes")\
         .eq("user_id", user_id)\
         .eq("date", workout_date.isoformat())\
         .order("exercise_name")\
@@ -393,7 +498,7 @@ def get_todays_workouts(user_id: str, workout_date: date) -> pd.DataFrame:
     
     if result.data:
         return pd.DataFrame(result.data)
-    return pd.DataFrame(columns=['exercise_name', 'set_order', 'weight', 'unit', 'reps', 'rpe', 'notes'])
+    return pd.DataFrame(columns=['id', 'exercise_name', 'set_order', 'weight', 'unit', 'reps', 'rpe', 'notes'])
 
 
 def get_all_workouts(user_id: str, days: Optional[int] = None) -> pd.DataFrame:
@@ -690,3 +795,196 @@ def get_pr_records(user_id: str) -> Dict[str, Dict]:
         }
     
     return pr_dict
+
+
+def rename_exercise(user_id: str, old_name: str, new_name: str) -> Tuple[int, int]:
+    """
+    Rename an exercise in both exercises table and workout_logs table
+    
+    Args:
+        user_id: User UUID
+        old_name: Current exercise name
+        new_name: New exercise name
+    
+    Returns:
+        Tuple of (exercises_updated_count, workout_logs_updated_count)
+    """
+    supabase = get_supabase()
+    
+    exercises_updated = 0
+    workout_logs_updated = 0
+    
+    try:
+        # Update exercises table
+        result_exercises = supabase.table("exercises")\
+            .update({"name": new_name})\
+            .eq("user_id", user_id)\
+            .eq("name", old_name)\
+            .execute()
+        
+        exercises_updated = len(result_exercises.data) if result_exercises.data else 0
+        
+        # Update workout_logs table
+        result_logs = supabase.table("workout_logs")\
+            .update({"exercise_name": new_name})\
+            .eq("user_id", user_id)\
+            .eq("exercise_name", old_name)\
+            .execute()
+        
+        workout_logs_updated = len(result_logs.data) if result_logs.data else 0
+        
+    except Exception as e:
+        print(f"Error renaming exercise: {e}")
+    
+    return exercises_updated, workout_logs_updated
+
+
+def update_workout_set(user_id: str, set_id: int, weight: float, unit: str, reps: int, rpe: Optional[int] = None, notes: Optional[str] = None) -> bool:
+    """
+    Update a single workout set by ID
+    
+    Args:
+        user_id: User UUID
+        set_id: Workout log ID
+        weight: Weight value
+        unit: Unit (kg, lb, notch, notch/plate)
+        reps: Number of reps
+        rpe: Rate of Perceived Exertion (1-10, optional)
+        notes: Optional notes
+    
+    Returns:
+        True if successful, False if set not found or user doesn't own it
+    """
+    supabase = get_supabase()
+    
+    try:
+        # First verify the set exists and belongs to the user
+        check_result = supabase.table("workout_logs")\
+            .select("id")\
+            .eq("id", set_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        if not check_result.data:
+            return False
+        
+        # Update the set
+        update_data = {
+            "weight": weight,
+            "unit": unit,
+            "reps": reps
+        }
+        
+        if rpe is not None:
+            update_data["rpe"] = rpe
+        if notes is not None:
+            update_data["notes"] = notes
+        
+        result = supabase.table("workout_logs")\
+            .update(update_data)\
+            .eq("id", set_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        return len(result.data) > 0 if result.data else False
+    except Exception as e:
+        print(f"Error updating workout set: {e}")
+        return False
+
+
+def delete_workout_set(user_id: str, set_id: int) -> bool:
+    """
+    Delete a single workout set by ID
+    
+    Args:
+        user_id: User UUID
+        set_id: Workout log ID
+    
+    Returns:
+        True if successful, False if set not found or user doesn't own it
+    """
+    supabase = get_supabase()
+    
+    try:
+        # First verify the set exists and belongs to the user
+        check_result = supabase.table("workout_logs")\
+            .select("id")\
+            .eq("id", set_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        if not check_result.data:
+            return False
+        
+        # Delete the set
+        result = supabase.table("workout_logs")\
+            .delete()\
+            .eq("id", set_id)\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        return True
+    except Exception as e:
+        print(f"Error deleting workout set: {e}")
+        return False
+
+
+def get_workout_session_ids(user_id: str, workout_date: date, exercise_name: str) -> List[int]:
+    """
+    Get all set IDs for a workout session (same date + exercise)
+    
+    Args:
+        user_id: User UUID
+        workout_date: Workout date
+        exercise_name: Name of the exercise
+    
+    Returns:
+        List of workout log IDs
+    """
+    supabase = get_supabase()
+    
+    result = supabase.table("workout_logs")\
+        .select("id")\
+        .eq("user_id", user_id)\
+        .eq("date", workout_date.isoformat())\
+        .eq("exercise_name", exercise_name)\
+        .execute()
+    
+    if result.data:
+        return [row['id'] for row in result.data]
+    return []
+
+
+def delete_workout_session(user_id: str, workout_date: date, exercise_name: str) -> int:
+    """
+    Delete all sets for a workout session (same date + exercise)
+    
+    Args:
+        user_id: User UUID
+        workout_date: Workout date
+        exercise_name: Name of the exercise
+    
+    Returns:
+        Number of deleted sets (0 if none found or user doesn't own them)
+    """
+    supabase = get_supabase()
+    
+    try:
+        # First get the IDs to count them
+        set_ids = get_workout_session_ids(user_id, workout_date, exercise_name)
+        
+        if not set_ids:
+            return 0
+        
+        # Delete all sets for this session
+        result = supabase.table("workout_logs")\
+            .delete()\
+            .eq("user_id", user_id)\
+            .eq("date", workout_date.isoformat())\
+            .eq("exercise_name", exercise_name)\
+            .execute()
+        
+        return len(set_ids)
+    except Exception as e:
+        print(f"Error deleting workout session: {e}")
+        return 0

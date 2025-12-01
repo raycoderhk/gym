@@ -209,10 +209,9 @@ def get_weight_options(unit: str) -> List[float]:
         weights.extend([i * 5.0 for i in range(5, 41)])  # 25 to 200 in 5kg steps
         return weights
     elif unit == "lb":
-        # Common lb weights: 0, 5, 10, then by 5lb up to 450lb
-        weights = [0.0]
-        weights.extend([5.0, 10.0])
-        weights.extend([i * 5.0 for i in range(3, 91)])  # 15 to 450 in 5lb steps
+        # Generate weights from 0 to 500 in 1lb increments
+        # This allows exact weights like 12, 17, 23 lbs to be preserved
+        weights = [float(i) for i in range(501)]  # 0 to 500 in 1lb steps
         return weights
     else:  # notch/plate
         # Notch/plate: 0 to 30
@@ -285,8 +284,7 @@ def get_default_exercises() -> dict:
             'Leg Extension'
         ],
         '手臂 (Arms)': [
-            'Preacher Curl',
-            'Dumbbell Bicep Curl (Single Arm)',
+            'Preacher Curl (Single Arm)',
             'Bicep Curl',
             'Tricep Extension',
             'Hammer Curl',

@@ -24,7 +24,9 @@ from database.db_manager import (
     get_exercise_history, get_all_exercises, get_exercises_by_muscle_group,
     add_custom_exercise, get_todays_workouts, get_all_workouts,
     get_muscle_group_stats, get_pr_records, import_workout_from_csv,
-    get_exercise_entry_counts, get_exercise_details, update_exercise_steps
+    get_exercise_entry_counts, get_exercise_details, update_exercise_steps,
+    update_workout_set, delete_workout_set, delete_workout_session,
+    get_exercise_workout_counts, get_recent_workout_sessions
 )
 from utils.calculations import (
     calculate_1rm, convert_unit, standardize_weight,
@@ -101,6 +103,11 @@ def render_log_workout_page(user_id: str):
     
     # Muscle group and exercise selection
     muscle_groups = get_muscle_groups()
+    
+    # Track previous muscle group to detect changes
+    if 'previous_muscle_group' not in st.session_state:
+        st.session_state.previous_muscle_group = None
+    
     selected_muscle_group = st.selectbox("選擇肌肉群", muscle_groups)
     
     # Get exercises for selected muscle group
@@ -109,12 +116,27 @@ def render_log_workout_page(user_id: str):
         st.info(f"「{selected_muscle_group}」目前沒有動作，請先在「動作庫管理」頁面新增動作。")
         return
     
-    # Exercise selection with buttons
-    st.subheader("選擇動作")
+    # Clear selected exercise if muscle group changed or if selected exercise is not in current group
+    if st.session_state.previous_muscle_group != selected_muscle_group:
+        st.session_state.previous_muscle_group = selected_muscle_group
+        # Clear selected exercise when muscle group changes
+        if 'selected_exercise' in st.session_state:
+            st.session_state.selected_exercise = None
+    
+    # Also clear if selected exercise is not in the current muscle group's exercises
+    if 'selected_exercise' in st.session_state and st.session_state.selected_exercise:
+        if st.session_state.selected_exercise not in exercises:
+            st.session_state.selected_exercise = None
     
     # Initialize selected exercise in session state if not set
     if 'selected_exercise' not in st.session_state:
         st.session_state.selected_exercise = None
+    
+    # Get workout counts for all exercises
+    workout_counts = get_exercise_workout_counts(user_id)
+    
+    # Exercise selection with buttons
+    st.subheader("選擇動作")
     
     # Create button grid (3 columns)
     num_cols = 3
@@ -124,10 +146,15 @@ def render_log_workout_page(user_id: str):
     for idx, exercise_name in enumerate(exercises):
         col_idx = idx % num_cols
         with exercise_cols[col_idx]:
+            # Get workout count for this exercise
+            count = workout_counts.get(exercise_name, 0)
+            # Format button label with count
+            button_label = f"{exercise_name} ({count})" if count > 0 else exercise_name
+            
             # Highlight selected button
             button_type = "primary" if st.session_state.selected_exercise == exercise_name else "secondary"
             if st.button(
-                exercise_name,
+                button_label,
                 key=f"ex_btn_{exercise_name}",
                 use_container_width=True,
                 type=button_type
@@ -150,29 +177,45 @@ def render_log_workout_page(user_id: str):
         st.info("請選擇一個動作以繼續")
         return
     
-    # Auto-fill: Get previous workout
+    # Auto-fill: Get recent workout sessions (last 3)
+    recent_sessions = get_recent_workout_sessions(user_id, selected_exercise, limit=3)
+    
+    # Get previous workout for fallback (used in form defaults)
     previous_workout = get_previous_workout(user_id, selected_exercise)
-    previous_workout_session = get_previous_workout_session(user_id, selected_exercise)
     
     # Initialize session state for copied workout
     copy_key = f"copied_workout_{selected_exercise}"
     if copy_key not in st.session_state:
         st.session_state[copy_key] = None
     
-    # Display previous workout info with copy button and preview
-    if previous_workout:
-        # Summary line with copy button
-        col_info, col_button = st.columns([3, 1])
-        with col_info:
-            st.info(f"💡 上一次記錄 ({previous_workout['date']}): {format_weight(previous_workout['weight'], previous_workout['unit'])} × {previous_workout['reps']} 次")
-        with col_button:
-            if previous_workout_session:
-                if st.button("📋 複製上次訓練", key=f"copy_btn_{selected_exercise}", use_container_width=True):
-                    st.session_state[copy_key] = previous_workout_session
+    # Display recent workout sessions with copy buttons
+    if recent_sessions:
+        st.subheader("📊 最近訓練記錄")
+        
+        # Create columns for side-by-side display (3 columns for 3 workouts)
+        num_sessions = len(recent_sessions)
+        session_cols = st.columns(num_sessions)
+        
+        for idx, session in enumerate(recent_sessions):
+            with session_cols[idx]:
+                # Format date
+                session_date = session['date']
+                if isinstance(session_date, str):
+                    from datetime import datetime
+                    try:
+                        session_date = datetime.fromisoformat(session_date.replace('Z', '+00:00')).date()
+                    except:
+                        pass
+                
+                # Header with date and copy button
+                st.markdown(f"**{session_date}**")
+                copy_btn_key = f"copy_btn_{selected_exercise}_{idx}_{session['date']}"
+                if st.button("📋 複製", key=copy_btn_key, use_container_width=True, type="primary"):
+                    st.session_state[copy_key] = session
                     # Also store unit and num_sets in session state to force update
-                    copied_unit = previous_workout_session['unit']
+                    copied_unit = session['unit']
                     st.session_state[f"{copy_key}_unit"] = copied_unit
-                    st.session_state[f"{copy_key}_num_sets"] = len(previous_workout_session['sets'])
+                    st.session_state[f"{copy_key}_num_sets"] = len(session['sets'])
                     # Add a copy timestamp to force form widget reset
                     st.session_state[f"{copy_key}_copied_at"] = time.time()
                     # Clear old unit widget state to force reset
@@ -183,16 +226,19 @@ def render_log_workout_page(user_id: str):
                     for key in list(st.session_state.keys()):
                         if key.startswith(f"unit_{selected_exercise}_") and key != f"unit_{selected_exercise}_{int(st.session_state[f'{copy_key}_copied_at'])}":
                             del st.session_state[key]
-                    st.success("✅ 已複製上次訓練數據！")
+                    # Clear adjustment states when copying
+                    widget_suffix_for_clear = f"_{selected_exercise}_{int(st.session_state[f'{copy_key}_copied_at'])}"
+                    for j in range(20):  # Clear up to 20 sets worth of adjustments
+                        weight_adj_key = f"weight_adj_{j}{widget_suffix_for_clear}"
+                        reps_adj_key = f"reps_adj_{j}{widget_suffix_for_clear}"
+                        if weight_adj_key in st.session_state:
+                            st.session_state[weight_adj_key] = 0
+                        if reps_adj_key in st.session_state:
+                            st.session_state[reps_adj_key] = 0
+                    st.success("✅ 已複製訓練數據！")
                     st.rerun()
-            else:
-                st.write("")  # Empty space for layout consistency
-        
-        # Detailed preview of last workout
-        if previous_workout_session:
-            with st.expander("📊 查看上次訓練詳情", expanded=False):
-                session = previous_workout_session
-                st.write(f"**日期:** {session['date']}")
+                
+                # Display details directly (no expander)
                 st.write(f"**單位:** {session['unit']}")
                 
                 # Display all sets in a table format
@@ -209,11 +255,8 @@ def render_log_workout_page(user_id: str):
                     st.dataframe(sets_df, use_container_width=True, hide_index=True)
                 
                 # Display RPE and Notes if available
-                col_rpe_prev, col_notes_prev = st.columns(2)
-                with col_rpe_prev:
                     if session.get('rpe'):
                         st.write(f"**RPE:** {session['rpe']}/10")
-                with col_notes_prev:
                     if session.get('notes'):
                         st.write(f"**備註:** {session['notes']}")
     
@@ -284,6 +327,29 @@ def render_log_workout_page(user_id: str):
     weight_options = get_weight_options(effective_unit)
     reps_options = get_reps_options()
     
+    # Dynamically add copied weights to options list if they don't exist
+    # This preserves exact weights like 12, 17, 23 lbs when copying
+    if copied_data and 'sets' in copied_data:
+        copied_weights = set()
+        copied_unit = copied_data.get('unit', effective_unit)
+        
+        # Extract all weights from copied sets
+        for copied_set in copied_data['sets']:
+            weight = copied_set['weight']
+            # Convert to effective unit if needed
+            if copied_unit != effective_unit:
+                weight = convert_unit(weight, copied_unit, effective_unit)
+            if weight > 0:
+                copied_weights.add(weight)
+        
+        # Add missing weights to options list
+        for weight in copied_weights:
+            if weight not in weight_options:
+                weight_options.append(weight)
+        
+        # Sort the combined list to maintain order
+        weight_options = sorted(weight_options)
+    
     # Create dynamic input form
     with st.form("workout_form", clear_on_submit=False):
         sets_data = []
@@ -295,6 +361,14 @@ def render_log_workout_page(user_id: str):
         widget_suffix = f"_{selected_exercise}_{int(copy_timestamp)}" if copy_timestamp > 0 else f"_{selected_exercise}"
         
         for i in range(num_sets):
+            # Initialize adjustment keys in session state
+            weight_adj_key = f"weight_adj_{i}{widget_suffix}"
+            reps_adj_key = f"reps_adj_{i}{widget_suffix}"
+            if weight_adj_key not in st.session_state:
+                st.session_state[weight_adj_key] = 0
+            if reps_adj_key not in st.session_state:
+                st.session_state[reps_adj_key] = 0
+            
             with col1:
                 weight_key = f"weight_{i}{widget_suffix}"
                 # Get default weight value - prioritize copied data
@@ -316,10 +390,12 @@ def render_log_workout_page(user_id: str):
                     if effective_unit != previous_workout['unit']:
                         default_weight = convert_unit(default_weight, previous_workout['unit'], effective_unit)
                 
-                # Find closest match in options if exact match not found
+                # Note: With expanded weight options (1lb increments) and dynamic merging,
+                # exact matches should be found. But keep this as a safety fallback.
                 if default_weight > 0 and default_weight not in weight_options:
-                    closest_weight = min(weight_options, key=lambda x: abs(x - default_weight))
-                    default_weight = closest_weight
+                    # Add the weight to options if it's not there (shouldn't happen with 1lb increments)
+                    weight_options.append(default_weight)
+                    weight_options = sorted(weight_options)
                 
                 # Find index for default weight
                 try:
@@ -327,10 +403,15 @@ def render_log_workout_page(user_id: str):
                 except ValueError:
                     default_weight_index = 0
                 
+                # Apply adjustment from buttons
+                current_weight_index = default_weight_index + st.session_state[weight_adj_key]
+                # Clamp to valid range
+                current_weight_index = max(0, min(len(weight_options) - 1, current_weight_index))
+                
                 weight = st.selectbox(
                     f"組 {i+1} - 重量",
                     options=weight_options,
-                    index=default_weight_index,
+                    index=current_weight_index,
                     key=weight_key,
                     format_func=lambda x: f"{int(x) if x == int(x) else x:.1f} {effective_unit}" if x > 0 else "選擇重量"
                 )
@@ -352,10 +433,15 @@ def render_log_workout_page(user_id: str):
                 except ValueError:
                     default_reps_index = 0
                 
+                # Apply adjustment from buttons
+                current_reps_index = default_reps_index + st.session_state[reps_adj_key]
+                # Clamp to valid range
+                current_reps_index = max(0, min(len(reps_options) - 1, current_reps_index))
+                
                 reps = st.selectbox(
                     f"組 {i+1} - 次數",
                     options=reps_options,
-                    index=default_reps_index,
+                    index=current_reps_index,
                     key=reps_key,
                     format_func=lambda x: f"{x} 次" if x > 0 else "選擇次數"
                 )
@@ -411,6 +497,14 @@ def render_log_workout_page(user_id: str):
                         # Clear copied data after successful save
                         if copy_key in st.session_state:
                             st.session_state[copy_key] = None
+                        # Clear adjustment states after successful save
+                        for j in range(num_sets):
+                            weight_adj_key = f"weight_adj_{j}{widget_suffix}"
+                            reps_adj_key = f"reps_adj_{j}{widget_suffix}"
+                            if weight_adj_key in st.session_state:
+                                st.session_state[weight_adj_key] = 0
+                            if reps_adj_key in st.session_state:
+                                st.session_state[reps_adj_key] = 0
                     except Exception as e:
                         st.error(f"儲存失敗: {str(e)}")
     
@@ -452,14 +546,191 @@ def render_log_workout_page(user_id: str):
     today_workouts = get_todays_workouts(user_id, workout_date)
     
     if not today_workouts.empty:
-        # Format display
-        display_df = today_workouts.copy()
-        display_df['重量'] = display_df.apply(
-            lambda row: format_weight(row['weight'], row['unit']), axis=1
-        )
-        display_df = display_df[['exercise_name', 'set_order', '重量', 'reps', 'rpe', 'notes']]
-        display_df.columns = ['動作', '組數', '重量', '次數', 'RPE', '備註']
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        # Group workouts by exercise
+        exercises = today_workouts['exercise_name'].unique()
+        
+        # Initialize session state for edit/delete operations
+        if 'editing_set_id' not in st.session_state:
+            st.session_state.editing_set_id = None
+        if 'confirm_delete_set_id' not in st.session_state:
+            st.session_state.confirm_delete_set_id = None
+        if 'confirm_delete_session' not in st.session_state:
+            st.session_state.confirm_delete_session = None
+        
+        # Display workouts grouped by exercise
+        for exercise_name in exercises:
+            exercise_workouts = today_workouts[today_workouts['exercise_name'] == exercise_name].copy()
+            exercise_workouts = exercise_workouts.sort_values('set_order')
+            
+            # Exercise header with delete session button
+            col_header1, col_header2 = st.columns([4, 1])
+            with col_header1:
+                st.markdown(f"### {exercise_name}")
+            with col_header2:
+                delete_session_key = f"delete_session_{exercise_name}_{workout_date}"
+                if st.button("🗑️ 刪除整個訓練", key=delete_session_key, use_container_width=True, type="secondary"):
+                    st.session_state.confirm_delete_session = (exercise_name, workout_date)
+                    st.rerun()
+            
+            # Confirmation dialog for session deletion
+            if st.session_state.confirm_delete_session and st.session_state.confirm_delete_session[0] == exercise_name:
+                st.warning(f"⚠️ 確定要刪除 {exercise_name} 在 {workout_date} 的所有訓練記錄嗎？")
+                col_confirm1, col_confirm2 = st.columns(2)
+                with col_confirm1:
+                    if st.button("✅ 確認刪除", key=f"confirm_delete_session_{exercise_name}", type="primary"):
+                        deleted_count = delete_workout_session(user_id, workout_date, exercise_name)
+                        if deleted_count > 0:
+                            st.success(f"✅ 已刪除 {deleted_count} 組訓練記錄")
+                            st.session_state.confirm_delete_session = None
+                            st.rerun()
+                        else:
+                            st.error("刪除失敗")
+                with col_confirm2:
+                    if st.button("❌ 取消", key=f"cancel_delete_session_{exercise_name}"):
+                        st.session_state.confirm_delete_session = None
+                        st.rerun()
+            
+            # Display each set
+            for idx, row in exercise_workouts.iterrows():
+                set_id = row['id']
+                set_order = row['set_order']
+                weight = row['weight']
+                unit = row['unit']
+                reps = row['reps']
+                rpe = row.get('rpe')
+                notes = row.get('notes')
+                
+                # Check if this set is being edited
+                is_editing = st.session_state.editing_set_id == set_id
+                is_confirming_delete = st.session_state.confirm_delete_set_id == set_id
+                
+                if is_editing:
+                    # Edit form
+                    with st.expander(f"✏️ 編輯組 {set_order}", expanded=True):
+                        with st.form(f"edit_form_{set_id}", clear_on_submit=False):
+                            col_w1, col_w2, col_w3 = st.columns([2, 2, 1])
+                            
+                            with col_w1:
+                                # Weight options based on current unit
+                                weight_options = get_weight_options(unit)
+                                default_weight_idx = 0
+                                if weight in weight_options:
+                                    default_weight_idx = weight_options.index(weight)
+                                new_weight = st.selectbox(
+                                    "重量",
+                                    options=weight_options,
+                                    index=default_weight_idx,
+                                    key=f"edit_weight_{set_id}",
+                                    format_func=lambda x: f"{int(x) if x == int(x) else x:.1f} {unit}" if x > 0 else "選擇重量"
+                                )
+                            
+                            with col_w2:
+                                reps_options = get_reps_options()
+                                default_reps_idx = 0
+                                if reps in reps_options:
+                                    default_reps_idx = reps_options.index(reps)
+                                new_reps = st.selectbox(
+                                    "次數",
+                                    options=reps_options,
+                                    index=default_reps_idx,
+                                    key=f"edit_reps_{set_id}",
+                                    format_func=lambda x: f"{x} 次" if x > 0 else "選擇次數"
+                                )
+                            
+                            with col_w3:
+                                new_unit = st.radio(
+                                    "單位",
+                                    ["kg", "lb", "notch/plate"],
+                                    index=0 if unit == "kg" else (1 if unit == "lb" else 2),
+                                    horizontal=True,
+                                    key=f"edit_unit_{set_id}"
+                                )
+                            
+                            col_rpe_edit, col_notes_edit = st.columns(2)
+                            with col_rpe_edit:
+                                new_rpe = st.slider(
+                                    "RPE (自覺強度)",
+                                    min_value=1,
+                                    max_value=10,
+                                    value=int(rpe) if rpe else 7,
+                                    step=1,
+                                    key=f"edit_rpe_{set_id}",
+                                    help="1=非常輕鬆, 10=極限"
+                                )
+                            with col_notes_edit:
+                                new_notes = st.text_area(
+                                    "備註 (選填)",
+                                    value=notes if notes else "",
+                                    height=100,
+                                    key=f"edit_notes_{set_id}",
+                                    placeholder="例如：左肩有點卡..."
+                                )
+                            
+                            col_save, col_cancel = st.columns(2)
+                            with col_save:
+                                if st.form_submit_button("💾 儲存", type="primary"):
+                                    if new_weight > 0 and new_reps > 0:
+                                        success = update_workout_set(
+                                            user_id, set_id, new_weight, new_unit,
+                                            new_reps, new_rpe, new_notes.strip() if new_notes else None
+                                        )
+                                        if success:
+                                            st.success("✅ 已更新訓練記錄")
+                                            st.session_state.editing_set_id = None
+                                            st.rerun()
+                                        else:
+                                            st.error("更新失敗")
+                                    else:
+                                        st.error("請輸入有效的重量和次數")
+                            with col_cancel:
+                                if st.form_submit_button("❌ 取消"):
+                                    st.session_state.editing_set_id = None
+                                    st.rerun()
+                
+                elif is_confirming_delete:
+                    # Delete confirmation
+                    st.warning(f"⚠️ 確定要刪除 {exercise_name} 組 {set_order} 的訓練記錄嗎？")
+                    col_del1, col_del2 = st.columns(2)
+                    with col_del1:
+                        if st.button("✅ 確認刪除", key=f"confirm_delete_{set_id}", type="primary"):
+                            success = delete_workout_set(user_id, set_id)
+                            if success:
+                                st.success("✅ 已刪除訓練記錄")
+                                st.session_state.confirm_delete_set_id = None
+                                st.rerun()
+                            else:
+                                st.error("刪除失敗")
+                    with col_del2:
+                        if st.button("❌ 取消", key=f"cancel_delete_{set_id}"):
+                            st.session_state.confirm_delete_set_id = None
+                            st.rerun()
+                
+                else:
+                    # Display set info with edit/delete buttons
+                    col_info, col_edit, col_delete = st.columns([6, 1, 1])
+                    
+                    with col_info:
+                        weight_display = format_weight(weight, unit)
+                        rpe_display = f"RPE: {rpe}/10" if rpe else ""
+                        notes_display = f"備註: {notes}" if notes else ""
+                        info_text = f"組 {set_order}: {weight_display} × {reps} 次"
+                        if rpe_display:
+                            info_text += f" | {rpe_display}"
+                        if notes_display:
+                            info_text += f" | {notes_display}"
+                        st.write(info_text)
+                    
+                    with col_edit:
+                        if st.button("✏️", key=f"edit_btn_{set_id}", help="編輯"):
+                            st.session_state.editing_set_id = set_id
+                            st.rerun()
+                    
+                    with col_delete:
+                        if st.button("🗑️", key=f"delete_btn_{set_id}", help="刪除"):
+                            st.session_state.confirm_delete_set_id = set_id
+                            st.rerun()
+            
+            st.divider()
         
         # Calculate total volume
         total_volume = 0
@@ -519,12 +790,14 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
                     max_weight = max(effective_weights)
                     max_reps = max(s['reps'] for s in session_sets)
                     total_volume = sum(calculate_total_volume(bodyweight_in_unit - s['weight'], s['reps'], primary_unit) for s in session_sets)
-                    avg_1rm = sum(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+                    # Calculate maximum 1RM instead of average
+                    max_1rm = max(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets)
                 else:
                     max_weight = max(s['weight'] for s in session_sets)
                     max_reps = max(s['reps'] for s in session_sets)
                     total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
-                    avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+                    # Calculate maximum 1RM instead of average
+                    max_1rm = max(calculate_1rm(s['weight'], s['reps']) for s in session_sets)
                     
                     # Get primary unit for this session (most common unit)
                     session_units = [s['unit'] for s in session_sets]
@@ -535,7 +808,7 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
                     'max_weight': max_weight,
                     'max_reps': max_reps,
                     'total_volume': total_volume,
-                    'avg_1rm': avg_1rm,
+                    'max_1rm': max_1rm,
                     'sets': len(session_sets),
                     'unit': primary_unit
                 })
@@ -565,12 +838,14 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
             max_weight = max(effective_weights)
             max_reps = max(s['reps'] for s in session_sets)
             total_volume = sum(calculate_total_volume(bodyweight_in_unit - s['weight'], s['reps'], primary_unit) for s in session_sets)
-            avg_1rm = sum(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+            # Calculate maximum 1RM instead of average
+            max_1rm = max(calculate_1rm(bodyweight_in_unit - s['weight'], s['reps']) for s in session_sets)
         else:
             max_weight = max(s['weight'] for s in session_sets)
             max_reps = max(s['reps'] for s in session_sets)
             total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
-            avg_1rm = sum(calculate_1rm(s['weight'], s['reps']) for s in session_sets) / len(session_sets)
+            # Calculate maximum 1RM instead of average
+            max_1rm = max(calculate_1rm(s['weight'], s['reps']) for s in session_sets)
             
             session_units = [s['unit'] for s in session_sets]
             primary_unit = max(set(session_units), key=session_units.count) if session_units else 'kg'
@@ -580,7 +855,7 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
             'max_weight': max_weight,
             'max_reps': max_reps,
             'total_volume': total_volume,
-            'avg_1rm': avg_1rm,
+            'max_1rm': max_1rm,
             'sets': len(session_sets),
             'unit': primary_unit
         })
@@ -697,8 +972,8 @@ def render_progress_dashboard_page(user_id: str):
         y_col = 'total_volume'
         y_label = '總容量 (kg)'
     else:
-        y_col = 'avg_1rm'
-        y_label = '預估 1RM'
+        y_col = 'max_1rm'
+        y_label = '預估 1RM (最大值)'
     
     # Get data for all selected exercises
     all_session_data = []
@@ -1203,10 +1478,37 @@ def main():
     
     st.sidebar.markdown("---")
     
-    page = st.sidebar.selectbox(
-        "導航",
-        ["記錄訓練", "進度儀表板", "動作庫管理", "資料匯入"]
-    )
+    # Navigation buttons
+    st.sidebar.markdown("### 📍 導航")
+    
+    # Initialize current page in session state
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = "記錄訓練"
+    
+    # Define pages with icons
+    pages = {
+        "記錄訓練": "📝",
+        "進度儀表板": "📈",
+        "動作庫管理": "📚",
+        "資料匯入": "📥"
+    }
+    
+    # Create navigation buttons
+    for page_name, icon in pages.items():
+        is_active = st.session_state.current_page == page_name
+        button_type = "primary" if is_active else "secondary"
+        
+        if st.sidebar.button(
+            f"{icon} {page_name}",
+            key=f"nav_{page_name}",
+            use_container_width=True,
+            type=button_type
+        ):
+            st.session_state.current_page = page_name
+            st.rerun()
+    
+    # Set page from session state
+    page = st.session_state.current_page
     
     # Bodyweight setting for assisted exercises
     st.sidebar.markdown("---")
