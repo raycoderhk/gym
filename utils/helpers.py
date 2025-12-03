@@ -105,6 +105,28 @@ def is_assisted_exercise(exercise_name: str) -> bool:
     return any(keyword in exercise_lower for keyword in assisted_keywords)
 
 
+def is_pure_bodyweight_exercise(exercise_name: str) -> bool:
+    """
+    Check if an exercise is a pure bodyweight exercise (not assisted)
+    where weight doesn't change, so we should track reps instead
+    
+    Args:
+        exercise_name: Name of the exercise
+    
+    Returns:
+        True if the exercise is pure bodyweight (e.g., Pull-up, Push-up)
+    """
+    # Pure bodyweight exercises (not assisted)
+    pure_bodyweight_keywords = ['pull-up', 'push-up', 'dip', 'plank', 'sit-up', 'crunch']
+    exercise_lower = exercise_name.lower()
+    
+    # Must contain a bodyweight keyword but NOT be assisted
+    has_bodyweight_keyword = any(keyword in exercise_lower for keyword in pure_bodyweight_keywords)
+    is_assisted = is_assisted_exercise(exercise_name)
+    
+    return has_bodyweight_keyword and not is_assisted
+
+
 def get_exercise_types() -> List[str]:
     """
     Get list of exercise types

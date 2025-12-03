@@ -94,6 +94,146 @@ def render_log_workout_page(user_id: str):
     """Render the Log Workout page"""
     st.header("📝 記錄訓練")
     
+    # Last 7 days workout summary
+    from datetime import timedelta
+    from database.db_manager import get_all_workouts, get_all_exercises
+    
+    st.subheader("📊 過去 7 天訓練摘要")
+    
+    # Get workouts from last 7 days
+    workouts_df = get_all_workouts(user_id, days=7)
+    
+    if not workouts_df.empty:
+        # Get muscle group mapping for exercises
+        all_exercises = get_all_exercises(user_id)
+        exercise_to_muscle = {ex['name']: ex.get('muscle_group', '其他 (Other)') for ex in all_exercises}
+        
+        # Muscle group color mapping
+        muscle_group_colors = {
+            '胸 (Chest)': '#FFE5E5',      # Light red
+            '背 (Back)': '#E5F3FF',       # Light blue
+            '肩 (Shoulders)': '#FFF9E5',  # Light yellow
+            '腿 (Legs)': '#E5FFE5',       # Light green
+            '手臂 (Arms)': '#F0E5FF',     # Light purple
+            '核心 (Core)': '#FFE5CC',     # Light orange
+            '其他 (Other)': '#F5F5F5'     # Light grey
+        }
+        
+        # Get unique dates and sort
+        unique_dates = sorted(workouts_df['date'].unique(), reverse=True)
+        
+        # Muscle group emoji/indicator mapping for visual identification
+        muscle_group_indicators = {
+            '胸 (Chest)': '🔴',
+            '背 (Back)': '🔵',
+            '肩 (Shoulders)': '🟡',
+            '腿 (Legs)': '🟢',
+            '手臂 (Arms)': '🟣',
+            '核心 (Core)': '🟠',
+            '其他 (Other)': '⚪'
+        }
+        
+        # Build summary data - one row per exercise per day
+        summary_rows = []
+        for workout_date in unique_dates:
+            day_workouts = workouts_df[workouts_df['date'] == workout_date]
+            
+            # Format date and weekday
+            date_obj = workout_date if isinstance(workout_date, date) else pd.to_datetime(workout_date).date()
+            weekday_names = ['週一', '週二', '週三', '週四', '週五', '週六', '週日']
+            weekday = weekday_names[date_obj.weekday()]
+            date_str = date_obj.strftime('%Y-%m-%d')
+            date_display = f"{date_str} ({weekday})"
+            
+            # Calculate total volume for the day
+            total_volume = 0
+            for _, row in day_workouts.iterrows():
+                from utils.calculations import calculate_total_volume
+                total_volume += calculate_total_volume(row['weight'], row['reps'], row['unit'])
+            
+            # Group by exercise and create one row per exercise
+            exercises = day_workouts['exercise_name'].unique()
+            for exercise_idx, exercise_name in enumerate(exercises):
+                ex_sets = day_workouts[day_workouts['exercise_name'] == exercise_name].sort_values('set_order')
+                sets_count = len(ex_sets)
+                
+                # Format each set - show reps only for pure bodyweight exercises
+                from utils.helpers import is_pure_bodyweight_exercise
+                is_pure_bodyweight = is_pure_bodyweight_exercise(exercise_name)
+                
+                sets_list = []
+                for _, row in ex_sets.iterrows():
+                    weight = row['weight']
+                    unit = row['unit']
+                    reps = int(row['reps'])
+                    
+                    if is_pure_bodyweight:
+                        # For pure bodyweight exercises, show only reps
+                        sets_list.append(f"x{reps}")
+                    else:
+                        # For other exercises, show weight unit x reps
+                        if weight == int(weight):
+                            weight_str = str(int(weight))
+                        else:
+                            weight_str = f"{weight:.1f}"
+                        sets_list.append(f"{weight_str} {unit} x{reps}")
+                
+                sets_str = ', '.join(sets_list)
+                
+                # Get muscle group indicator
+                muscle_group = exercise_to_muscle.get(exercise_name, '其他 (Other)')
+                indicator = muscle_group_indicators.get(muscle_group, '⚪')
+                
+                # Format: "🔴 exercise name | xx sets | xx kg x12, xx kg x10"
+                exercise_detail = f"{indicator} {exercise_name} | {sets_count} sets | {sets_str}"
+                
+                # Show date only for first exercise of the day, show volume only for first exercise
+                summary_rows.append({
+                    '日期': date_display if exercise_idx == 0 else '',
+                    '動作詳情': exercise_detail,
+                    '總容量 (kg)': f"{total_volume:.1f}" if exercise_idx == 0 else ''
+                })
+        
+        # Create DataFrame with alternating row backgrounds
+        if summary_rows:
+            summary_df = pd.DataFrame(summary_rows)
+            
+            # Determine background color for each row based on date
+            date_to_bg = {}
+            current_date = None
+            date_index = 0
+            
+            for idx, row in summary_df.iterrows():
+                row_date = row['日期']
+                if row_date and row_date != current_date:
+                    current_date = row_date
+                    date_index += 1
+                    date_to_bg[row_date] = '#F5F5F5' if date_index % 2 == 1 else '#FFFFFF'
+                elif not row_date:
+                    # Empty date means same day as previous
+                    date_to_bg[idx] = date_to_bg.get(current_date, '#FFFFFF')
+                else:
+                    date_to_bg[idx] = date_to_bg.get(row_date, '#FFFFFF')
+            
+            def style_row_background(row):
+                """Apply alternating background colors based on date"""
+                row_date = row['日期']
+                if row_date:
+                    bg_color = date_to_bg.get(row_date, '#FFFFFF')
+                else:
+                    # Use the row index to find the background
+                    bg_color = date_to_bg.get(row.name, '#FFFFFF')
+                return [f'background-color: {bg_color}'] * len(row)
+            
+            styled_df = summary_df.style.apply(style_row_background, axis=1)
+            
+            # Display styled dataframe
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("過去 7 天沒有訓練記錄")
+    
+    st.divider()
+    
     # Date selection
     col1, col2 = st.columns([2, 1])
     with col1:
@@ -313,13 +453,23 @@ def render_log_workout_page(user_id: str):
                 st.write(f"**單位:** {session['unit']}")
                 
                 # Display all sets in a table format
+                from utils.helpers import is_pure_bodyweight_exercise
+                is_pure_bodyweight = is_pure_bodyweight_exercise(selected_exercise)
+                
                 sets_data = []
                 for s in session['sets']:
-                    sets_data.append({
-                        '組數': s['set_order'],
-                        '重量': format_weight(s['weight'], session['unit']),
-                        '次數': f"{s['reps']} 次"
-                    })
+                    if is_pure_bodyweight:
+                        # For pure bodyweight exercises, show only reps
+                        sets_data.append({
+                            '組數': s['set_order'],
+                            '次數': f"{s['reps']} 次"
+                        })
+                    else:
+                        sets_data.append({
+                            '組數': s['set_order'],
+                            '重量': format_weight(s['weight'], session['unit']),
+                            '次數': f"{s['reps']} 次"
+                        })
                 
                 if sets_data:
                     sets_df = pd.DataFrame(sets_data)
@@ -981,10 +1131,19 @@ def render_log_workout_page(user_id: str):
                         col_info, col_edit, col_delete = st.columns([6, 1, 1])
                         
                         with col_info:
-                            weight_display = format_weight(weight, unit)
+                            from utils.helpers import is_pure_bodyweight_exercise
+                            is_pure_bodyweight = is_pure_bodyweight_exercise(exercise_name)
+                            
                             rpe_display = f"RPE: {rpe}/10" if rpe else ""
                             notes_display = f"備註: {notes}" if notes else ""
-                            info_text = f"組 {set_order}: {weight_display} × {reps} 次"
+                            
+                            if is_pure_bodyweight:
+                                # For pure bodyweight exercises, show only reps
+                                info_text = f"組 {set_order}: {reps} 次"
+                            else:
+                                weight_display = format_weight(weight, unit)
+                                info_text = f"組 {set_order}: {weight_display} × {reps} 次"
+                            
                             if rpe_display:
                                 info_text += f" | {rpe_display}"
                             if notes_display:
@@ -1247,14 +1406,14 @@ def render_progress_dashboard_page(user_id: str):
     
     # Determine y column and label
     if metric == "最大重量 & 預估 1RM (Max Weight & Estimated 1RM)":
-        # Combined view: show both Max Weight and Estimated 1RM on the same chart
-        y_col = 'max_weight'
-        y_label = '最大重量'
+        # Combined view: show both Max Weight/Reps and Estimated 1RM on the same chart
+        y_col = 'display_value'  # Will be max_reps for bodyweight, max_weight for others
+        y_label = '最大重量 / 最大次數'  # Will be adjusted per exercise
         show_combined = True
     elif metric == "最大重量 (Max Weight)":
-        # Pure Max Weight view: only show max_weight
-        y_col = 'max_weight'
-        y_label = '最大重量'
+        # Pure Max Weight/Reps view: show display_value (reps for bodyweight, weight for others)
+        y_col = 'display_value'
+        y_label = '最大重量 / 最大次數'  # Will be adjusted per exercise
         show_combined = False
     elif metric == "總容量 (Total Volume)":
         y_col = 'total_volume'
@@ -1267,6 +1426,7 @@ def render_progress_dashboard_page(user_id: str):
     
     # Get data for all selected exercises
     all_session_data = []
+    from utils.helpers import is_pure_bodyweight_exercise
     
     for exercise_name in selected_exercises:
         history_df = get_exercise_history(user_id, exercise_name)
@@ -1279,6 +1439,13 @@ def render_progress_dashboard_page(user_id: str):
         
         if not session_df.empty:
             session_df['exercise'] = exercise_name
+            # For pure bodyweight exercises, use max_reps instead of max_weight for display
+            if is_pure_bodyweight_exercise(exercise_name):
+                session_df['display_value'] = session_df['max_reps']
+                session_df['is_bodyweight'] = True
+            else:
+                session_df['display_value'] = session_df['max_weight']
+                session_df['is_bodyweight'] = False
             all_session_data.append(session_df)
     
     if not all_session_data:
@@ -1309,14 +1476,74 @@ def render_progress_dashboard_page(user_id: str):
         # If show_combined is True, also show 1RM on the same chart
         st.subheader("📊 趨勢圖表（依單位分組）")
         
-        # Get unique units from the data
-        if 'unit' not in combined_df.columns:
-            # Fallback: show all together if unit info is missing
+        # Separate bodyweight exercises from weight-based exercises
+        bodyweight_df = combined_df[combined_df['is_bodyweight'] == True].copy() if 'is_bodyweight' in combined_df.columns else pd.DataFrame()
+        weight_df = combined_df[combined_df['is_bodyweight'] != True].copy() if 'is_bodyweight' in combined_df.columns else combined_df.copy()
+        
+        # First, show bodyweight exercises chart (unit = reps) if unit info is missing
+        if 'unit' not in combined_df.columns and not bodyweight_df.empty:
+            st.markdown("### 次數 (reps)")
+            if show_combined:
+                fig = px.line(
+                    bodyweight_df,
+                    x='date',
+                    y='display_value',
+                    color='exercise',
+                    markers=True,
+                    title=f"最大次數趨勢比較",
+                    labels={'date': '日期', 'display_value': '最大次數', 'exercise': '動作'},
+                    custom_data=['max_reps']
+                )
+                for i, trace in enumerate(fig.data):
+                    if trace.name:
+                        exercise_name = trace.name
+                        trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大次數: %{{y:.0f}} 次<extra></extra>'
+                fig.update_layout(
+                    height=400,
+                    hovermode='x unified',
+                    yaxis_title='最大次數 (次)',
+                    legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+                )
+            else:
+                if y_col == 'display_value':
+                    fig = px.line(
+                        bodyweight_df,
+                        x='date',
+                        y=y_col,
+                        color='exercise',
+                        markers=True,
+                        title=f"最大次數趨勢比較",
+                        labels={'date': '日期', y_col: '最大次數', 'exercise': '動作'},
+                        custom_data=['max_reps']
+                    )
+                    for i, trace in enumerate(fig.data):
+                        if trace.name:
+                            exercise_name = trace.name
+                            trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大次數: %{{y:.0f}} 次<extra></extra>'
+                else:
+                    fig = px.line(
+                        bodyweight_df,
+                        x='date',
+                        y=y_col,
+                        color='exercise',
+                        markers=True,
+                        title=f"{y_label} 趨勢比較",
+                        labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
+                    )
+                fig.update_layout(height=400, hovermode='x unified')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Get unique units from weight-based data
+        if 'unit' not in weight_df.columns and weight_df.empty:
+            # No weight data, skip
+            pass
+        elif 'unit' not in weight_df.columns:
+            # Fallback: show all weight-based together if unit info is missing
             st.subheader("📊 趨勢圖表")
             if show_combined:
                 # Create chart with both max_weight and max_1rm
                 fig = px.line(
-                    combined_df,
+                    weight_df,
                     x='date',
                     y='max_weight',
                     color='exercise',
@@ -1325,19 +1552,16 @@ def render_progress_dashboard_page(user_id: str):
                     labels={'date': '日期', 'max_weight': '最大重量', 'exercise': '動作'},
                     custom_data=['max_reps', 'unit']
                 )
-                # Update hovertemplate for max_weight traces to include reps
+                # Update hovertemplate
                 for i, trace in enumerate(fig.data):
                     if trace.name and '(1RM)' not in trace.name:
-                        # This is a max_weight trace, update its hovertemplate
                         exercise_name = trace.name
-                        # Get the data for this exercise to access max_reps
-                        ex_df = combined_df[combined_df['exercise'] == exercise_name]
-                        # Update hovertemplate to show weight and reps on same line
-                        trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} %{{customdata[1]}} × %{{customdata[0]}}次<extra></extra>'
+                        unit = weight_df[weight_df['exercise'] == exercise_name].iloc[0]['unit'] if 'unit' in weight_df.columns and not weight_df[weight_df['exercise'] == exercise_name].empty else ''
+                        trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
                 
-                # Add 1RM as secondary line with different style
-                for exercise_name in combined_df['exercise'].unique():
-                    ex_df = combined_df[combined_df['exercise'] == exercise_name]
+                # Add 1RM as secondary line
+                for exercise_name in weight_df['exercise'].unique():
+                    ex_df = weight_df[weight_df['exercise'] == exercise_name]
                     fig.add_scatter(
                         x=ex_df['date'],
                         y=ex_df['max_1rm'],
@@ -1347,6 +1571,7 @@ def render_progress_dashboard_page(user_id: str):
                         marker=dict(symbol='diamond', size=8),
                         hovertemplate=f'<b>{exercise_name} (1RM)</b><br>日期: %{{x}}<br>預估 1RM: %{{y:.1f}}<extra></extra>'
                     )
+                
                 fig.update_layout(
                     height=500,
                     hovermode='x unified',
@@ -1354,30 +1579,27 @@ def render_progress_dashboard_page(user_id: str):
                     legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
                 )
             else:
-                # Check if showing max_weight to include reps in tooltip
-                if y_col == 'max_weight':
+                # Single metric view
+                if y_col == 'display_value':
                     fig = px.line(
-                        combined_df,
+                        weight_df,
                         x='date',
-                        y=y_col,
+                        y='max_weight',
                         color='exercise',
                         markers=True,
                         title=f"{y_label} 趨勢比較",
-                        labels={'date': '日期', y_col: y_label, 'exercise': '動作'},
+                        labels={'date': '日期', 'max_weight': y_label, 'exercise': '動作'},
                         custom_data=['max_reps', 'unit']
                     )
-                    # Update hovertemplate for max_weight traces to include reps
+                    # Update hovertemplate
                     for i, trace in enumerate(fig.data):
                         if trace.name:
                             exercise_name = trace.name
-                            # Get unit from the data
-                            ex_df = combined_df[combined_df['exercise'] == exercise_name]
-                            if not ex_df.empty:
-                                unit = ex_df.iloc[0]['unit'] if 'unit' in ex_df.columns else ''
-                                trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
+                            unit = weight_df[weight_df['exercise'] == exercise_name].iloc[0]['unit'] if 'unit' in weight_df.columns and not weight_df[weight_df['exercise'] == exercise_name].empty else ''
+                            trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
                 else:
                     fig = px.line(
-                        combined_df,
+                        weight_df,
                         x='date',
                         y=y_col,
                         color='exercise',
@@ -1388,29 +1610,94 @@ def render_progress_dashboard_page(user_id: str):
                 fig.update_layout(height=500, hovermode='x unified')
             st.plotly_chart(fig, use_container_width=True)
         else:
-            # Group by unit
-            unique_units = combined_df['unit'].unique()
+            # Separate bodyweight exercises from weight-based exercises
+            bodyweight_df = combined_df[combined_df['is_bodyweight'] == True].copy() if 'is_bodyweight' in combined_df.columns else pd.DataFrame()
+            weight_df = combined_df[combined_df['is_bodyweight'] != True].copy() if 'is_bodyweight' in combined_df.columns else combined_df.copy()
             
-            # Create a chart for each unit
-            for unit in sorted(unique_units):
-                unit_df = combined_df[combined_df['unit'] == unit]
-                
-                if unit_df.empty:
-                    continue
-                
-                # Display unit label
-                unit_label_map = {
-                    'kg': '公斤 (kg)',
-                    'lb': '磅 (lb)',
-                    'notch': '檔位 (notch)',
-                    'notch/plate': '檔位/片 (notch/plate)'
-                }
-                unit_display = unit_label_map.get(unit, unit)
-                
-                st.markdown(f"### {unit_display}")
+            # First, show bodyweight exercises chart (unit = reps)
+            if not bodyweight_df.empty:
+                st.markdown("### 次數 (reps)")
                 
                 if show_combined:
-                    # Create chart with both max_weight and max_1rm
+                    # Create chart with display_value (reps) - no 1RM for bodyweight
+                    fig = px.line(
+                        bodyweight_df,
+                        x='date',
+                        y='display_value',
+                        color='exercise',
+                        markers=True,
+                        title=f"最大次數趨勢比較",
+                        labels={'date': '日期', 'display_value': '最大次數', 'exercise': '動作'},
+                        custom_data=['max_reps']
+                    )
+                    # Update hovertemplate for bodyweight exercises
+                    for i, trace in enumerate(fig.data):
+                        if trace.name:
+                            exercise_name = trace.name
+                            trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大次數: %{{y:.0f}} 次<extra></extra>'
+                    
+                    fig.update_layout(
+                        height=400,
+                        hovermode='x unified',
+                        yaxis_title='最大次數 (次)',
+                        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+                    )
+                else:
+                    # Single metric view for bodyweight
+                    if y_col == 'display_value':
+                        fig = px.line(
+                            bodyweight_df,
+                            x='date',
+                            y=y_col,
+                            color='exercise',
+                            markers=True,
+                            title=f"最大次數趨勢比較",
+                            labels={'date': '日期', y_col: '最大次數', 'exercise': '動作'},
+                            custom_data=['max_reps']
+                        )
+                        # Update hovertemplate
+                        for i, trace in enumerate(fig.data):
+                            if trace.name:
+                                exercise_name = trace.name
+                                trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大次數: %{{y:.0f}} 次<extra></extra>'
+                    else:
+                        fig = px.line(
+                            bodyweight_df,
+                            x='date',
+                            y=y_col,
+                            color='exercise',
+                            markers=True,
+                            title=f"{y_label} 趨勢比較",
+                            labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
+                        )
+                    fig.update_layout(height=400, hovermode='x unified')
+                
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Then, show weight-based exercises grouped by unit
+            if not weight_df.empty:
+                unique_units = weight_df['unit'].unique()
+                
+                # Create a chart for each weight unit
+                for unit in sorted(unique_units):
+                    unit_df = weight_df[weight_df['unit'] == unit]
+                    
+                    if unit_df.empty:
+                        continue
+                    
+                    # Display unit label
+                    unit_label_map = {
+                        'kg': '公斤 (kg)',
+                        'lb': '磅 (lb)',
+                        'notch': '檔位 (notch)',
+                        'notch/plate': '檔位/片 (notch/plate)'
+                    }
+                    unit_display = unit_label_map.get(unit, unit)
+                    
+                    st.markdown(f"### {unit_display}")
+                
+                if show_combined:
+                    # Create chart with both max_weight and max_1rm (weight-based exercises only)
                     fig = px.line(
                         unit_df,
                         x='date',
@@ -1421,12 +1708,10 @@ def render_progress_dashboard_page(user_id: str):
                         labels={'date': '日期', 'max_weight': f'最大重量 ({unit})', 'exercise': '動作'},
                         custom_data=['max_reps', 'unit']
                     )
-                    # Update hovertemplate for max_weight traces to include reps
+                    # Update hovertemplate to show weight and reps
                     for i, trace in enumerate(fig.data):
                         if trace.name and '(1RM)' not in trace.name:
-                            # This is a max_weight trace, update its hovertemplate
                             exercise_name = trace.name
-                            # Update hovertemplate to show weight and reps on same line
                             trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
                     
                     # Add 1RM as secondary line with different style for each exercise
@@ -1441,6 +1726,7 @@ def render_progress_dashboard_page(user_id: str):
                             marker=dict(symbol='diamond', size=8),
                             hovertemplate=f'<b>{exercise_name} (1RM)</b><br>日期: %{{x}}<br>預估 1RM: %{{y:.1f}} {unit}<extra></extra>'
                         )
+                    
                     fig.update_layout(
                         height=400,
                         hovermode='x unified',
@@ -1448,19 +1734,20 @@ def render_progress_dashboard_page(user_id: str):
                         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
                     )
                 else:
-                    # Check if showing max_weight to include reps in tooltip
-                    if y_col == 'max_weight':
+                    # Single metric view (weight-based exercises only)
+                    if y_col == 'display_value':
+                        # For weight-based exercises, display_value is max_weight
                         fig = px.line(
                             unit_df,
                             x='date',
-                            y=y_col,
+                            y='max_weight',
                             color='exercise',
                             markers=True,
                             title=f"{y_label} 趨勢比較 - {unit_display}",
-                            labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'},
+                            labels={'date': '日期', 'max_weight': f'最大重量 ({unit})', 'exercise': '動作'},
                             custom_data=['max_reps', 'unit']
                         )
-                        # Update hovertemplate for max_weight traces to include reps
+                        # Update hovertemplate to show weight and reps
                         for i, trace in enumerate(fig.data):
                             if trace.name:
                                 exercise_name = trace.name
