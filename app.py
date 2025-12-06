@@ -1671,7 +1671,16 @@ def render_progress_dashboard_page(user_id: str):
         if not session_df.empty:
             session_df['exercise'] = exercise_name
             # For pure bodyweight exercises, use max_reps instead of max_weight for display
-            if is_pure_bodyweight_exercise(exercise_name):
+            is_bodyweight_ex = is_pure_bodyweight_exercise(exercise_name)
+            # Additional check: if unit is 'bodyweight' or all weights are effectively 0
+            if not is_bodyweight_ex:
+                # Check if all weights are 0 or unit is 'bodyweight'
+                if 'unit' in session_df.columns:
+                    unique_units = session_df['unit'].unique()
+                    if 'bodyweight' in unique_units or (len(unique_units) == 1 and session_df['max_weight'].max() == 0):
+                        is_bodyweight_ex = True
+            
+            if is_bodyweight_ex:
                 session_df['display_value'] = session_df['max_reps']
                 session_df['is_bodyweight'] = True
             else:
@@ -1856,6 +1865,11 @@ def render_progress_dashboard_page(user_id: str):
             if not bodyweight_df.empty:
                 st.markdown("### 次數 (reps)")
                 
+                # Debug: Show which bodyweight exercises are included
+                bodyweight_exercises = bodyweight_df['exercise'].unique().tolist()
+                if len(bodyweight_exercises) > 0:
+                    st.caption(f"顯示 {len(bodyweight_exercises)} 個動作: {', '.join(bodyweight_exercises)}")
+                
                 if show_combined:
                     # Create chart with display_value (reps) - no 1RM for bodyweight
                     fig = px.line(
@@ -1880,6 +1894,7 @@ def render_progress_dashboard_page(user_id: str):
                         yaxis_title='最大次數 (次)',
                         legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
                     )
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
                     # Single metric view for bodyweight
                     if y_col == 'display_value':
