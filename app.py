@@ -26,7 +26,9 @@ from database.db_manager import (
     get_muscle_group_stats, get_pr_records, import_workout_from_csv,
     get_exercise_entry_counts, get_exercise_details, update_exercise_steps,
     update_workout_set, delete_workout_set, delete_workout_session,
-    get_exercise_workout_counts, get_recent_workout_sessions
+    get_exercise_workout_counts, get_recent_workout_sessions,
+    get_all_exercise_names_from_workouts, get_workout_sessions_by_exercise,
+    rename_workout_sessions
 )
 from utils.calculations import (
     calculate_1rm, convert_unit, standardize_weight,
@@ -114,8 +116,9 @@ def render_log_workout_page(user_id: str):
             '背 (Back)': '#E5F3FF',       # Light blue
             '肩 (Shoulders)': '#FFF9E5',  # Light yellow
             '腿 (Legs)': '#E5FFE5',       # Light green
-            '手臂 (Arms)': '#F0E5FF',     # Light purple
-            '核心 (Core)': '#FFE5CC',     # Light orange
+            '二頭肌 (Biceps)': '#F0E5FF',  # Light purple
+            '三頭肌 (Triceps)': '#E5D5FF', # Light purple (darker)
+            '核心 (Core)': '#FFE5CC',       # Light orange
             '其他 (Other)': '#F5F5F5'     # Light grey
         }
         
@@ -128,7 +131,8 @@ def render_log_workout_page(user_id: str):
             '背 (Back)': '🔵',
             '肩 (Shoulders)': '🟡',
             '腿 (Legs)': '🟢',
-            '手臂 (Arms)': '🟣',
+            '二頭肌 (Biceps)': '🟣',
+            '三頭肌 (Triceps)': '🟪',
             '核心 (Core)': '🟠',
             '其他 (Other)': '⚪'
         }
@@ -1305,9 +1309,20 @@ def render_progress_dashboard_page(user_id: str):
     """Render the Progress Dashboard page"""
     st.header("📈 進度儀表板")
     
-    # Get all exercises with entry counts
+    # Get all exercises from exercises table
     all_exercises = get_all_exercises(user_id)
-    if not all_exercises:
+    
+    # Get all exercise names from workout_logs (including orphaned ones)
+    workout_exercise_names = get_all_exercise_names_from_workouts(user_id)
+    
+    # Create a set of exercise names from exercises table for quick lookup
+    exercise_names_from_table = {ex['name'] for ex in all_exercises}
+    
+    # Identify orphaned exercises (exist in workout_logs but not in exercises table)
+    orphaned_exercises = [name for name in workout_exercise_names if name not in exercise_names_from_table]
+    
+    # If no exercises at all, show message
+    if not all_exercises and not workout_exercise_names:
         st.info("還沒有動作記錄，請先在「記錄訓練」頁面開始記錄。")
         return
     
@@ -1322,8 +1337,22 @@ def render_progress_dashboard_page(user_id: str):
         count = entry_counts.get(ex['name'], 0)
         exercises_by_group[mg].append({
             'name': ex['name'],
-            'count': count
+            'count': count,
+            'is_orphaned': False
         })
+    
+    # Add orphaned exercises to a separate group or mark them
+    if orphaned_exercises:
+        if '⚠️ 孤立動作 (Orphaned Exercises)' not in exercises_by_group:
+            exercises_by_group['⚠️ 孤立動作 (Orphaned Exercises)'] = []
+        for orphaned_name in orphaned_exercises:
+            # Try to infer muscle group from workout data or use "其他 (Other)"
+            count = entry_counts.get(orphaned_name, 0)
+            exercises_by_group['⚠️ 孤立動作 (Orphaned Exercises)'].append({
+                'name': orphaned_name,
+                'count': count,
+                'is_orphaned': True
+            })
     
     # Sort exercises within each group by entry count (descending)
     for mg in exercises_by_group:
@@ -1373,12 +1402,15 @@ def render_progress_dashboard_page(user_id: str):
         for ex_info in exercises:
             ex_name = ex_info['name']
             ex_count = ex_info['count']
+            is_orphaned = ex_info.get('is_orphaned', False)
             
             with cols[col_idx]:
                 # Use checkbox for multi-select
                 checkbox_key = f"ex_checkbox_{ex_name}"
+                # Add warning indicator for orphaned exercises
+                display_name = f"⚠️ {ex_name}" if is_orphaned else ex_name
                 is_checked = st.checkbox(
-                    f"{ex_name} ({ex_count})",
+                    f"{display_name} ({ex_count})",
                     key=checkbox_key,
                     value=st.session_state.get(checkbox_key, False)
                 )
@@ -1388,8 +1420,204 @@ def render_progress_dashboard_page(user_id: str):
             
             col_idx = (col_idx + 1) % 3
     
+    # Show warning about orphaned exercises if any exist
+    if orphaned_exercises:
+        st.warning(f"⚠️ 發現 {len(orphaned_exercises)} 個孤立動作（存在於訓練記錄但不在動作庫中）。建議使用下方的「重新命名/合併動作」功能將它們合併到現有動作。")
+    
+    # Add Rename/Merge Exercises Section
+    if selected_exercises:
+        with st.expander("🔄 重新命名/合併動作", expanded=False):
+            st.markdown("**選取的動作：**")
+            for ex_name in selected_exercises:
+                is_orphaned = ex_name in orphaned_exercises
+                orphaned_badge = " ⚠️ (孤立)" if is_orphaned else ""
+                st.write(f"- {ex_name}{orphaned_badge}")
+            
+            st.divider()
+            
+            # Get workout sessions for selected exercises
+            all_sessions_data = {}
+            for ex_name in selected_exercises:
+                sessions = get_workout_sessions_by_exercise(user_id, ex_name)
+                if sessions:
+                    all_sessions_data[ex_name] = sessions
+            
+            if all_sessions_data:
+                # Display workout sessions for each selected exercise
+                for ex_name, sessions in all_sessions_data.items():
+                    st.markdown(f"**{ex_name}** 的訓練記錄：")
+                    
+                    # Create session selection checkboxes
+                    session_keys = []
+                    for session in sessions:
+                        session_date = session['date']
+                        if isinstance(session_date, str):
+                            from datetime import datetime
+                            session_date = datetime.fromisoformat(session_date).date()
+                        
+                        session_key = f"session_{ex_name}_{session_date.isoformat()}"
+                        session_keys.append((session_key, session_date, session))
+                        
+                        is_selected = st.checkbox(
+                            f"{session_date} - {session['summary']}",
+                            key=session_key,
+                            value=st.session_state.get(session_key, False)
+                        )
+                    
+                    # Select All / Deselect All buttons for this exercise
+                    col_all, col_none = st.columns(2)
+                    with col_all:
+                        if st.button(f"全選 {ex_name}", key=f"select_all_{ex_name}"):
+                            for key, _, _ in session_keys:
+                                st.session_state[key] = True
+                            st.rerun()
+                    with col_none:
+                        if st.button(f"取消全選 {ex_name}", key=f"deselect_all_{ex_name}"):
+                            for key, _, _ in session_keys:
+                                st.session_state[key] = False
+                            st.rerun()
+                    
+                    st.divider()
+                
+                # Get all exercise names for target selection
+                # Include all exercises from table and all orphaned exercises
+                # Note: We allow selecting an orphaned exercise as target even if it's in selected_exercises
+                # because the user might want to merge other exercises TO an orphaned exercise
+                all_exercise_names = list(exercise_names_from_table) + orphaned_exercises
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_exercise_names = []
+                for name in all_exercise_names:
+                    if name not in seen:
+                        seen.add(name)
+                        unique_exercise_names.append(name)
+                
+                # For target options, we exclude selected exercises UNLESS they are orphaned
+                # (orphaned exercises should always be available as merge targets)
+                target_options = []
+                for name in unique_exercise_names:
+                    if name not in selected_exercises:
+                        target_options.append(name)
+                    elif name in orphaned_exercises:
+                        # Allow orphaned exercises as targets even if selected
+                        # (user might want to merge other exercises TO this orphaned one)
+                        target_options.append(name)
+                
+                target_options.sort()
+                
+                if target_options:
+                    st.markdown("**重新命名為：**")
+                    target_exercise = st.selectbox(
+                        "選擇要合併到的目標動作名稱",
+                        options=target_options,
+                        key="target_exercise_rename",
+                        help="選擇要合併到的目標動作名稱"
+                    )
+                    
+                    # Confirmation and rename
+                    st.markdown("**預覽：**")
+                    
+                    # Count selected sessions
+                    selected_sessions_count = 0
+                    rename_operations = []  # List of (exercise_name, dates) tuples
+                    
+                    for ex_name, sessions in all_sessions_data.items():
+                        selected_dates = []
+                        for session in sessions:
+                            session_date = session['date']
+                            if isinstance(session_date, str):
+                                from datetime import datetime
+                                session_date = datetime.fromisoformat(session_date).date()
+                            
+                            session_key = f"session_{ex_name}_{session_date.isoformat()}"
+                            if st.session_state.get(session_key, False):
+                                selected_dates.append(session_date)
+                                selected_sessions_count += 1
+                        
+                        if selected_dates:
+                            rename_operations.append((ex_name, selected_dates))
+                    
+                    if selected_sessions_count > 0:
+                        st.info(f"將重新命名 {selected_sessions_count} 個訓練記錄從 {len(rename_operations)} 個動作合併到「{target_exercise}」")
+                        
+                        with st.form("confirm_rename_form"):
+                            if st.form_submit_button("✅ 確認重新命名", type="primary"):
+                                total_updated = 0
+                                errors = []
+                                
+                                # Check if target exercise exists in exercises table, if not create it
+                                from utils.helpers import infer_exercise_type, get_muscle_groups
+                                target_exists = get_exercise_details(user_id, target_exercise)
+                                
+                                if not target_exists:
+                                    # Target exercise doesn't exist in library, create it
+                                    # Infer muscle group from exercise name or use "其他 (Other)"
+                                    # Try to infer from the exercises being renamed
+                                    inferred_muscle_group = "其他 (Other)"
+                                    
+                                    # Get muscle groups from exercises being renamed
+                                    for ex_name, _ in rename_operations:
+                                        ex_details = get_exercise_details(user_id, ex_name)
+                                        if ex_details and ex_details.get('muscle_group'):
+                                            inferred_muscle_group = ex_details['muscle_group']
+                                            break
+                                    
+                                    # If still not found, try to infer from exercise name keywords
+                                    target_lower = target_exercise.lower()
+                                    if 'tricep' in target_lower or 'triceps' in target_lower:
+                                        inferred_muscle_group = "三頭肌 (Triceps)"
+                                    elif 'bicep' in target_lower or 'biceps' in target_lower or 'curl' in target_lower:
+                                        inferred_muscle_group = "二頭肌 (Biceps)"
+                                    elif 'chest' in target_lower or 'pec' in target_lower:
+                                        inferred_muscle_group = "胸 (Chest)"
+                                    elif 'back' in target_lower or 'lat' in target_lower or 'row' in target_lower:
+                                        inferred_muscle_group = "背 (Back)"
+                                    elif 'shoulder' in target_lower or 'deltoid' in target_lower or 'delt' in target_lower:
+                                        inferred_muscle_group = "肩 (Shoulders)"
+                                    elif 'leg' in target_lower or 'quad' in target_lower or 'hamstring' in target_lower:
+                                        inferred_muscle_group = "腿 (Legs)"
+                                    elif 'core' in target_lower or 'ab' in target_lower:
+                                        inferred_muscle_group = "核心 (Core)"
+                                    
+                                    # Infer exercise type
+                                    exercise_type = infer_exercise_type(target_exercise)
+                                    
+                                    # Create the exercise in the library
+                                    if add_custom_exercise(user_id, target_exercise, inferred_muscle_group, exercise_type):
+                                        st.info(f"已將「{target_exercise}」新增到動作庫（肌肉群: {inferred_muscle_group}）")
+                                
+                                # Now perform the rename operations
+                                for ex_name, dates in rename_operations:
+                                    updated_count = rename_workout_sessions(
+                                        user_id, ex_name, target_exercise, dates
+                                    )
+                                    if updated_count > 0:
+                                        total_updated += updated_count
+                                    else:
+                                        errors.append(f"{ex_name}: 沒有記錄被更新")
+                                
+                                if total_updated > 0:
+                                    st.success(f"✅ 成功重新命名 {total_updated} 個訓練記錄！")
+                                    # Clear session state for renamed exercises
+                                    for ex_name in [op[0] for op in rename_operations]:
+                                        for key in list(st.session_state.keys()):
+                                            if key.startswith(f"ex_checkbox_{ex_name}") or key.startswith(f"session_{ex_name}_"):
+                                                del st.session_state[key]
+                                    st.rerun()
+                                else:
+                                    st.error("重新命名失敗。請檢查錯誤訊息。")
+                                    if errors:
+                                        for error in errors:
+                                            st.error(error)
+                    else:
+                        st.info("請至少選擇一個訓練記錄來重新命名")
+                else:
+                    st.info("沒有其他動作可以合併到。請先新增動作到動作庫。")
+            else:
+                st.info("選取的動作沒有訓練記錄。")
+    
     if not selected_exercises:
-        st.info("請至少選擇一個動作來查看趨勢圖表")
+        st.info("請至少選擇一個動作來查看趨勢圖表或使用重新命名功能")
         return
     
     # Metric selection
@@ -1426,12 +1654,15 @@ def render_progress_dashboard_page(user_id: str):
     
     # Get data for all selected exercises
     all_session_data = []
+    exercises_with_data = []
+    exercises_without_data = []
     from utils.helpers import is_pure_bodyweight_exercise
     
     for exercise_name in selected_exercises:
         history_df = get_exercise_history(user_id, exercise_name)
         
         if history_df.empty:
+            exercises_without_data.append(exercise_name)
             continue
         
         history_df['date'] = pd.to_datetime(history_df['date'])
@@ -1447,10 +1678,17 @@ def render_progress_dashboard_page(user_id: str):
                 session_df['display_value'] = session_df['max_weight']
                 session_df['is_bodyweight'] = False
             all_session_data.append(session_df)
+            exercises_with_data.append(exercise_name)
+        else:
+            exercises_without_data.append(exercise_name)
     
     if not all_session_data:
         st.info("選取的動作沒有訓練記錄。")
         return
+    
+    # Show warning if some selected exercises have no data
+    if exercises_without_data:
+        st.warning(f"以下動作沒有訓練記錄，已從圖表中排除: {', '.join(exercises_without_data)}")
     
     # Combine all data
     combined_df = pd.concat(all_session_data, ignore_index=True)
@@ -1670,9 +1908,9 @@ def render_progress_dashboard_page(user_id: str):
                             title=f"{y_label} 趨勢比較",
                             labels={'date': '日期', y_col: y_label, 'exercise': '動作'}
                         )
-                    fig.update_layout(height=400, hovermode='x unified')
-                
-                st.plotly_chart(fig, use_container_width=True)
+                        fig.update_layout(height=400, hovermode='x unified')
+                    
+                    st.plotly_chart(fig, use_container_width=True)
             
             # Then, show weight-based exercises grouped by unit
             if not weight_df.empty:
@@ -1695,75 +1933,81 @@ def render_progress_dashboard_page(user_id: str):
                     unit_display = unit_label_map.get(unit, unit)
                     
                     st.markdown(f"### {unit_display}")
-                
-                if show_combined:
-                    # Create chart with both max_weight and max_1rm (weight-based exercises only)
-                    fig = px.line(
-                        unit_df,
-                        x='date',
-                        y='max_weight',
-                        color='exercise',
-                        markers=True,
-                        title=f"最大重量 & 預估 1RM 趨勢比較 - {unit_display}",
-                        labels={'date': '日期', 'max_weight': f'最大重量 ({unit})', 'exercise': '動作'},
-                        custom_data=['max_reps', 'unit']
-                    )
-                    # Update hovertemplate to show weight and reps
-                    for i, trace in enumerate(fig.data):
-                        if trace.name and '(1RM)' not in trace.name:
-                            exercise_name = trace.name
-                            trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
                     
-                    # Add 1RM as secondary line with different style for each exercise
-                    for exercise_name in unit_df['exercise'].unique():
-                        ex_df = unit_df[unit_df['exercise'] == exercise_name]
-                        fig.add_scatter(
-                            x=ex_df['date'],
-                            y=ex_df['max_1rm'],
-                            mode='lines+markers',
-                            name=f"{exercise_name} (1RM)",
-                            line=dict(dash='dash', width=2),
-                            marker=dict(symbol='diamond', size=8),
-                            hovertemplate=f'<b>{exercise_name} (1RM)</b><br>日期: %{{x}}<br>預估 1RM: %{{y:.1f}} {unit}<extra></extra>'
-                        )
+                    # Debug: Show which exercises are in this unit
+                    exercises_in_unit = unit_df['exercise'].unique().tolist()
+                    if len(exercises_in_unit) > 0:
+                        st.caption(f"顯示 {len(exercises_in_unit)} 個動作: {', '.join(exercises_in_unit)}")
                     
-                    fig.update_layout(
-                        height=400,
-                        hovermode='x unified',
-                        yaxis_title=f'重量 / 預估 1RM ({unit})',
-                        legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
-                    )
-                else:
-                    # Single metric view (weight-based exercises only)
-                    if y_col == 'display_value':
-                        # For weight-based exercises, display_value is max_weight
+                    if show_combined:
+                        # Create chart with both max_weight and max_1rm (weight-based exercises only)
                         fig = px.line(
                             unit_df,
                             x='date',
                             y='max_weight',
                             color='exercise',
                             markers=True,
-                            title=f"{y_label} 趨勢比較 - {unit_display}",
+                            title=f"最大重量 & 預估 1RM 趨勢比較 - {unit_display}",
                             labels={'date': '日期', 'max_weight': f'最大重量 ({unit})', 'exercise': '動作'},
                             custom_data=['max_reps', 'unit']
                         )
                         # Update hovertemplate to show weight and reps
                         for i, trace in enumerate(fig.data):
-                            if trace.name:
+                            if trace.name and '(1RM)' not in trace.name:
                                 exercise_name = trace.name
                                 trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
-                    else:
-                        fig = px.line(
-                            unit_df,
-                            x='date',
-                            y=y_col,
-                            color='exercise',
-                            markers=True,
-                            title=f"{y_label} 趨勢比較 - {unit_display}",
-                            labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'}
+                        
+                        # Add 1RM as secondary line with different style for each exercise
+                        for exercise_name in unit_df['exercise'].unique():
+                            ex_df = unit_df[unit_df['exercise'] == exercise_name]
+                            fig.add_scatter(
+                                x=ex_df['date'],
+                                y=ex_df['max_1rm'],
+                                mode='lines+markers',
+                                name=f"{exercise_name} (1RM)",
+                                line=dict(dash='dash', width=2),
+                                marker=dict(symbol='diamond', size=8),
+                                hovertemplate=f'<b>{exercise_name} (1RM)</b><br>日期: %{{x}}<br>預估 1RM: %{{y:.1f}} {unit}<extra></extra>'
+                            )
+                        
+                        fig.update_layout(
+                            height=400,
+                            hovermode='x unified',
+                            yaxis_title=f'重量 / 預估 1RM ({unit})',
+                            legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
                         )
-                    fig.update_layout(height=400, hovermode='x unified')
-                st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        # Single metric view (weight-based exercises only)
+                        if y_col == 'display_value':
+                            # For weight-based exercises, display_value is max_weight
+                            fig = px.line(
+                                unit_df,
+                                x='date',
+                                y='max_weight',
+                                color='exercise',
+                                markers=True,
+                                title=f"{y_label} 趨勢比較 - {unit_display}",
+                                labels={'date': '日期', 'max_weight': f'最大重量 ({unit})', 'exercise': '動作'},
+                                custom_data=['max_reps', 'unit']
+                            )
+                            # Update hovertemplate to show weight and reps
+                            for i, trace in enumerate(fig.data):
+                                if trace.name:
+                                    exercise_name = trace.name
+                                    trace.hovertemplate = f'<b>{exercise_name}</b><br>日期: %{{x}}<br>最大重量: %{{y:.1f}} {unit} × %{{customdata[0]}}次<extra></extra>'
+                        else:
+                            fig = px.line(
+                                unit_df,
+                                x='date',
+                                y=y_col,
+                                color='exercise',
+                                markers=True,
+                                title=f"{y_label} 趨勢比較 - {unit_display}",
+                                labels={'date': '日期', y_col: f'{y_label} ({unit})', 'exercise': '動作'}
+                            )
+                        fig.update_layout(height=400, hovermode='x unified')
+                        st.plotly_chart(fig, use_container_width=True)
     
     # PR Wall for selected exercises
     st.subheader("🏆 個人紀錄 (PR Wall)")
@@ -2057,7 +2301,7 @@ def render_data_import_page(user_id: str):
     您可以上傳 CSV 檔案來匯入歷史訓練記錄。CSV 檔案應包含以下欄位：
     
     - **Date**: 訓練日期 (格式: YYYY-MM-DD)
-    - **Muscle Group**: 肌肉群 (例如: Chest, Back, Arms)
+    - **Muscle Group**: 肌肉群 (例如: Chest, Back, Biceps, Triceps)
     - **Exercise**: 動作名稱
     - **Set Order**: 組數順序 (1, 2, 3...)
     - **Weight**: 重量

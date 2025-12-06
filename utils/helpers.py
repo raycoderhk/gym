@@ -19,7 +19,8 @@ def get_muscle_groups() -> List[str]:
         '背 (Back)',
         '肩 (Shoulders)',
         '腿 (Legs)',
-        '手臂 (Arms)',
+        '二頭肌 (Biceps)',
+        '三頭肌 (Triceps)',
         '核心 (Core)',
         '其他 (Other)'
     ]
@@ -42,8 +43,12 @@ def map_muscle_group(csv_muscle_group: str) -> str:
         'shoulder': '肩 (Shoulders)',
         'legs': '腿 (Legs)',
         'leg': '腿 (Legs)',
-        'arms': '手臂 (Arms)',
-        'arm': '手臂 (Arms)',
+        'arms': '二頭肌 (Biceps)',  # Default to Biceps for backward compatibility
+        'arm': '二頭肌 (Biceps)',
+        'biceps': '二頭肌 (Biceps)',
+        'bicep': '二頭肌 (Biceps)',
+        'triceps': '三頭肌 (Triceps)',
+        'tricep': '三頭肌 (Triceps)',
         'core': '核心 (Core)',
         'other': '其他 (Other)'
     }
@@ -305,12 +310,19 @@ def get_default_exercises() -> dict:
             'Leg Curl',
             'Leg Extension'
         ],
-        '手臂 (Arms)': [
+        '二頭肌 (Biceps)': [
             'Preacher Curl (Single Arm)',
             'Bicep Curl',
-            'Tricep Extension',
             'Hammer Curl',
-            'Tricep Dip'
+            'Cable Bicep Curl',
+            'Dumbbell Bicep Curl'
+        ],
+        '三頭肌 (Triceps)': [
+            'Tricep Extension',
+            'Tricep Dip',
+            'Cable Tricep Pushdown',
+            'Overhead Triceps Extension',
+            'Triceps Pushdown'
         ],
         '核心 (Core)': [
             'Plank',

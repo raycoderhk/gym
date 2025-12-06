@@ -1,4 +1,4 @@
-"""Fix Preacher Curl (Single Arm) muscle group to 手臂 (Arms)"""
+"""Fix Preacher Curl (Single Arm) muscle group to 二頭肌 (Biceps)"""
 
 import os
 import sys
@@ -14,12 +14,12 @@ supabase = get_supabase_client()
 
 # Update muscle group for Preacher Curl (Single Arm)
 result = supabase.table("exercises")\
-    .update({"muscle_group": "手臂 (Arms)"})\
+    .update({"muscle_group": "二頭肌 (Biceps)"})\
     .eq("name", "Preacher Curl (Single Arm)")\
     .execute()
 
 if result.data:
-    print(f"✅ Updated {len(result.data)} exercise(s) to muscle group '手臂 (Arms)'")
+    print(f"✅ Updated {len(result.data)} exercise(s) to muscle group '二頭肌 (Biceps)'")
     for ex in result.data:
         print(f"   - {ex['name']} is now in {ex['muscle_group']}")
 else:

@@ -839,6 +839,155 @@ def rename_exercise(user_id: str, old_name: str, new_name: str) -> Tuple[int, in
     return exercises_updated, workout_logs_updated
 
 
+def get_all_exercise_names_from_workouts(user_id: str) -> List[str]:
+    """
+    Get all unique exercise names from workout_logs table (including orphaned ones)
+    
+    Args:
+        user_id: User UUID
+    
+    Returns:
+        List of unique exercise names from workout_logs
+    """
+    supabase = get_supabase()
+    
+    try:
+        result = supabase.table("workout_logs")\
+            .select("exercise_name")\
+            .eq("user_id", user_id)\
+            .execute()
+        
+        if result.data:
+            # Get unique exercise names
+            unique_names = list(set([row['exercise_name'] for row in result.data]))
+            return sorted(unique_names)
+        return []
+    except Exception as e:
+        print(f"Error getting exercise names from workouts: {e}")
+        return []
+
+
+def get_workout_sessions_by_exercise(user_id: str, exercise_name: str) -> List[Dict]:
+    """
+    Get workout sessions for an exercise with date, set count, and summary
+    
+    Args:
+        user_id: User UUID
+        exercise_name: Name of the exercise
+    
+    Returns:
+        List of dictionaries, each containing:
+        - 'date': workout date
+        - 'set_count': number of sets
+        - 'summary': summary string (e.g., "3 sets, 10-12 reps, 12-17 lb")
+    """
+    supabase = get_supabase()
+    
+    try:
+        # Get all workout logs for this exercise
+        result = supabase.table("workout_logs")\
+            .select("date, set_order, weight, unit, reps")\
+            .eq("user_id", user_id)\
+            .eq("exercise_name", exercise_name)\
+            .order("date", desc=True)\
+            .order("set_order")\
+            .execute()
+        
+        if not result.data:
+            return []
+        
+        # Group by date
+        sessions_by_date = {}
+        for row in result.data:
+            workout_date = row['date']
+            # Convert string date to date object if needed
+            if isinstance(workout_date, str):
+                workout_date = datetime.fromisoformat(workout_date).date()
+            elif isinstance(workout_date, datetime):
+                workout_date = workout_date.date()
+            
+            # Use ISO format string as key for consistency
+            date_key = workout_date.isoformat() if isinstance(workout_date, date) else str(workout_date)
+            
+            if date_key not in sessions_by_date:
+                sessions_by_date[date_key] = {
+                    'date': workout_date,
+                    'sets': []
+                }
+            sessions_by_date[date_key]['sets'].append({
+                'weight': row['weight'],
+                'unit': row['unit'],
+                'reps': row['reps']
+            })
+        
+        # Build session summaries
+        sessions = []
+        for date_key, data in sessions_by_date.items():
+            sets = data['sets']
+            set_count = len(sets)
+            workout_date = data['date']
+            
+            # Build summary
+            weights = [s['weight'] for s in sets]
+            reps_list = [s['reps'] for s in sets]
+            unit = sets[0]['unit'] if sets else ''
+            
+            weight_range = f"{min(weights):.1f}-{max(weights):.1f}" if min(weights) != max(weights) else f"{weights[0]:.1f}"
+            reps_range = f"{min(reps_list)}-{max(reps_list)}" if min(reps_list) != max(reps_list) else str(reps_list[0])
+            
+            summary = f"{set_count} sets, {reps_range} reps, {weight_range} {unit}"
+            
+            sessions.append({
+                'date': workout_date,
+                'set_count': set_count,
+                'summary': summary
+            })
+        
+        return sessions
+    except Exception as e:
+        print(f"Error getting workout sessions for exercise '{exercise_name}': {e}")
+        return []
+
+
+def rename_workout_sessions(
+    user_id: str, 
+    old_exercise_name: str, 
+    new_exercise_name: str, 
+    dates: Optional[List[date]] = None
+) -> int:
+    """
+    Rename workout sessions (all or specific dates)
+    
+    Args:
+        user_id: User UUID
+        old_exercise_name: Current exercise name
+        new_exercise_name: Target exercise name
+        dates: Optional list of dates to rename. If None, renames all sessions
+    
+    Returns:
+        Count of updated workout logs
+    """
+    supabase = get_supabase()
+    
+    try:
+        query = supabase.table("workout_logs")\
+            .update({"exercise_name": new_exercise_name})\
+            .eq("user_id", user_id)\
+            .eq("exercise_name", old_exercise_name)
+        
+        # If dates provided, filter by dates
+        if dates:
+            date_strings = [d.isoformat() if isinstance(d, date) else d for d in dates]
+            query = query.in_("date", date_strings)
+        
+        result = query.execute()
+        
+        return len(result.data) if result.data else 0
+    except Exception as e:
+        print(f"Error renaming workout sessions: {e}")
+        return 0
+
+
 def update_workout_set(user_id: str, set_id: int, weight: float, unit: str, reps: int, rpe: Optional[int] = None, notes: Optional[str] = None) -> bool:
     """
     Update a single workout set by ID
