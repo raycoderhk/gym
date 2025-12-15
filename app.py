@@ -24,11 +24,11 @@ from database.db_manager import (
     get_exercise_history, get_all_exercises, get_exercises_by_muscle_group,
     add_custom_exercise, get_todays_workouts, get_all_workouts,
     get_muscle_group_stats, get_pr_records, import_workout_from_csv,
-    get_exercise_entry_counts, get_exercise_details, update_exercise_steps,
+    get_exercise_details, update_exercise_steps,
     update_workout_set, delete_workout_set, delete_workout_session,
     get_exercise_workout_counts, get_recent_workout_sessions,
     get_all_exercise_names_from_workouts, get_workout_sessions_by_exercise,
-    rename_workout_sessions
+    rename_workout_sessions, delete_exercise
 )
 from utils.calculations import (
     calculate_1rm, convert_unit, standardize_weight,
@@ -441,6 +441,14 @@ def render_log_workout_page(user_id: str):
                     for key in list(st.session_state.keys()):
                         if key.startswith(f"unit_{selected_exercise}_") and key != f"unit_{selected_exercise}_{int(st.session_state[f'{copy_key}_copied_at'])}":
                             del st.session_state[key]
+                    # Clear old num_sets widget state to force reset
+                    old_num_sets_key = f"num_sets_{selected_exercise}"
+                    if old_num_sets_key in st.session_state:
+                        del st.session_state[old_num_sets_key]
+                    # Also clear any old num_sets keys with timestamps
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(f"num_sets_{selected_exercise}_") and key != f"num_sets_{selected_exercise}_{int(st.session_state[f'{copy_key}_copied_at'])}":
+                            del st.session_state[key]
                     # Clear adjustment states when copying
                     widget_suffix_for_clear = f"_{selected_exercise}_{int(st.session_state[f'{copy_key}_copied_at'])}"
                     for j in range(20):  # Clear up to 20 sets worth of adjustments
@@ -493,6 +501,10 @@ def render_log_workout_page(user_id: str):
     
     # Number of sets selector - use copied data if available
     num_sets_key = f"{copy_key}_num_sets"
+    copy_timestamp = st.session_state.get(f"{copy_key}_copied_at", 0)
+    # Use timestamp in num_sets key to force reset when copying
+    num_sets_widget_key = f"num_sets_{selected_exercise}_{int(copy_timestamp)}" if copy_timestamp > 0 else f"num_sets_{selected_exercise}"
+    
     if num_sets_key in st.session_state:
         default_num_sets = st.session_state[num_sets_key]
     elif copied_data and 'sets' in copied_data:
@@ -500,12 +512,11 @@ def render_log_workout_page(user_id: str):
     else:
         default_num_sets = 3
     
-    num_sets = st.number_input("組數", min_value=1, max_value=10, value=default_num_sets, step=1, key=f"num_sets_{selected_exercise}")
+    num_sets = st.number_input("組數", min_value=1, max_value=10, value=default_num_sets, step=1, key=num_sets_widget_key)
     
     # Unit selection - use copied data if available
     unit_key = f"{copy_key}_unit"
-    copy_timestamp = st.session_state.get(f"{copy_key}_copied_at", 0)
-    # Use timestamp in unit key to force reset when copying
+    # Use timestamp in unit key to force reset when copying (copy_timestamp already defined above)
     # This ensures the radio button resets when we copy
     unit_widget_key = f"unit_{selected_exercise}_{int(copy_timestamp)}" if copy_timestamp > 0 else f"unit_{selected_exercise}"
     
@@ -1326,7 +1337,7 @@ def render_progress_dashboard_page(user_id: str):
         st.info("還沒有動作記錄，請先在「記錄訓練」頁面開始記錄。")
         return
     
-    entry_counts = get_exercise_entry_counts(user_id)
+    workout_counts = get_exercise_workout_counts(user_id)
     
     # Group exercises by muscle group
     exercises_by_group = {}
@@ -1334,7 +1345,7 @@ def render_progress_dashboard_page(user_id: str):
         mg = ex['muscle_group']
         if mg not in exercises_by_group:
             exercises_by_group[mg] = []
-        count = entry_counts.get(ex['name'], 0)
+        count = workout_counts.get(ex['name'], 0)
         exercises_by_group[mg].append({
             'name': ex['name'],
             'count': count,
@@ -1347,14 +1358,14 @@ def render_progress_dashboard_page(user_id: str):
             exercises_by_group['⚠️ 孤立動作 (Orphaned Exercises)'] = []
         for orphaned_name in orphaned_exercises:
             # Try to infer muscle group from workout data or use "其他 (Other)"
-            count = entry_counts.get(orphaned_name, 0)
+            count = workout_counts.get(orphaned_name, 0)
             exercises_by_group['⚠️ 孤立動作 (Orphaned Exercises)'].append({
                 'name': orphaned_name,
                 'count': count,
                 'is_orphaned': True
             })
     
-    # Sort exercises within each group by entry count (descending)
+    # Sort exercises within each group by workout count (descending)
     for mg in exercises_by_group:
         exercises_by_group[mg].sort(key=lambda x: x['count'], reverse=True)
     
@@ -2239,6 +2250,9 @@ def render_library_manager_page(user_id: str):
     all_exercises = get_all_exercises(user_id)
     
     if all_exercises:
+        # Get workout counts to identify orphaned exercises
+        workout_counts = get_exercise_workout_counts(user_id)
+        
         # Group by muscle group
         exercises_df = pd.DataFrame(all_exercises)
         
@@ -2253,19 +2267,50 @@ def render_library_manager_page(user_id: str):
                     ex_name = ex['name']
                     ex_type = ex['exercise_type']
                     has_steps = ex.get('execution_steps') and str(ex.get('execution_steps')).strip()
+                    workout_count = workout_counts.get(ex_name, 0)
+                    is_orphaned = workout_count == 0
                     
-                    # Create columns for exercise info and edit button
-                    info_col, edit_col = st.columns([4, 1])
+                    # Create columns for exercise info, edit button, and delete button (if orphaned)
+                    if is_orphaned:
+                        info_col, edit_col, delete_col = st.columns([3, 1, 1])
+                    else:
+                        info_col, edit_col = st.columns([4, 1])
                     
                     with info_col:
                         step_indicator = "📋" if has_steps else "📝"
-                        st.markdown(f"**{ex_name}** ({ex_type}) {step_indicator}")
+                        orphaned_indicator = " ⚠️ (孤立)" if is_orphaned else ""
+                        st.markdown(f"**{ex_name}** ({ex_type}) {step_indicator}{orphaned_indicator}")
                     
                     with edit_col:
                         edit_key = f"edit_steps_{ex_name}"
                         if st.button("編輯步驟", key=edit_key, use_container_width=True):
                             st.session_state[f"editing_{ex_name}"] = True
                             st.rerun()
+                    
+                    # Show delete button for orphaned exercises
+                    if is_orphaned:
+                        with delete_col:
+                            delete_key = f"delete_exercise_{ex_name}"
+                            if st.button("🗑️ 刪除", key=delete_key, use_container_width=True, type="secondary"):
+                                st.session_state[f"confirm_delete_exercise"] = ex_name
+                                st.rerun()
+                    
+                    # Show confirmation dialog for deletion
+                    if st.session_state.get(f"confirm_delete_exercise") == ex_name:
+                        st.warning(f"⚠️ 確定要刪除動作「{ex_name}」嗎？此動作沒有訓練記錄。")
+                        col_confirm, col_cancel = st.columns(2)
+                        with col_confirm:
+                            if st.button("✅ 確認刪除", key=f"confirm_delete_{ex_name}", type="primary"):
+                                if delete_exercise(user_id, ex_name):
+                                    st.success(f"✅ 已刪除動作: {ex_name}")
+                                    st.session_state[f"confirm_delete_exercise"] = None
+                                    st.rerun()
+                                else:
+                                    st.error("刪除失敗")
+                        with col_cancel:
+                            if st.button("❌ 取消", key=f"cancel_delete_{ex_name}"):
+                                st.session_state[f"confirm_delete_exercise"] = None
+                                st.rerun()
                     
                     # Show edit form if editing
                     if st.session_state.get(f"editing_{ex_name}", False):
@@ -2297,7 +2342,10 @@ def render_library_manager_page(user_id: str):
                     st.divider()
         
         # Summary
+        orphaned_count = sum(1 for ex in all_exercises if workout_counts.get(ex['name'], 0) == 0)
         st.metric("總動作數", len(all_exercises))
+        if orphaned_count > 0:
+            st.info(f"⚠️ 發現 {orphaned_count} 個孤立動作（沒有訓練記錄），可以刪除。")
     else:
         st.info("動作庫是空的，請新增動作。")
 

@@ -1176,3 +1176,30 @@ def delete_all_exercise_workouts(user_id: str, exercise_name: str) -> int:
     except Exception as e:
         print(f"Error deleting all workouts for exercise '{exercise_name}': {e}")
         return 0
+
+
+def delete_exercise(user_id: str, exercise_name: str) -> bool:
+    """
+    Delete an exercise entry from the exercises table.
+    
+    Args:
+        user_id: User UUID
+        exercise_name: Name of the exercise to delete
+    
+    Returns:
+        True if deleted successfully, False otherwise
+    """
+    supabase = get_supabase()
+    
+    try:
+        result = supabase.table("exercises")\
+            .delete()\
+            .eq("user_id", user_id)\
+            .eq("name", exercise_name)\
+            .execute()
+        
+        # Check if any rows were deleted
+        return result.data is not None and len(result.data) > 0
+    except Exception as e:
+        print(f"Error deleting exercise '{exercise_name}': {e}")
+        return False
