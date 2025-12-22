@@ -1241,7 +1241,16 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
                     # Find the set with max weight
                     max_set = max(session_sets, key=lambda s: s['weight'])
                     max_weight = max_set['weight']
-                    max_reps = max_set['reps']  # Use reps from the same set as max weight
+                    
+                    # For bodyweight exercises (all weights are 0), find max reps across all sets
+                    # Otherwise, use reps from the set with max weight
+                    if max_weight == 0 and all(s['weight'] == 0 for s in session_sets):
+                        # Bodyweight exercise: find max reps across all sets
+                        max_reps = max(s['reps'] for s in session_sets)
+                    else:
+                        # Weighted exercise: use reps from the set with max weight
+                        max_reps = max_set['reps']
+                    
                     total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
                     # Calculate 1RM using the weight and reps from the same set that had max weight
                     max_1rm = calculate_1rm(max_weight, max_reps)
@@ -1292,7 +1301,16 @@ def calculate_session_metrics(history_df: pd.DataFrame, exercise_name: str = Non
             # Find the set with max weight
             max_set = max(session_sets, key=lambda s: s['weight'])
             max_weight = max_set['weight']
-            max_reps = max_set['reps']  # Use reps from the same set as max weight
+            
+            # For bodyweight exercises (all weights are 0), find max reps across all sets
+            # Otherwise, use reps from the set with max weight
+            if max_weight == 0 and all(s['weight'] == 0 for s in session_sets):
+                # Bodyweight exercise: find max reps across all sets
+                max_reps = max(s['reps'] for s in session_sets)
+            else:
+                # Weighted exercise: use reps from the set with max weight
+                max_reps = max_set['reps']
+            
             total_volume = sum(calculate_total_volume(s['weight'], s['reps'], s['unit']) for s in session_sets)
             # Calculate 1RM using the weight and reps from the same set that had max weight
             max_1rm = calculate_1rm(max_weight, max_reps)

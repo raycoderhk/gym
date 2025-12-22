@@ -622,8 +622,22 @@ def import_workout_from_csv(user_id: str, df: pd.DataFrame) -> Tuple[int, int, L
             # Get set order
             set_order = int(row['Set Order']) if pd.notna(row['Set Order']) else 1
             
-            # Get weight
-            weight = float(row['Weight']) if pd.notna(row['Weight']) else 0.0
+            # Get weight - handle "Bodyweight" string
+            weight_value = row['Weight']
+            if pd.isna(weight_value):
+                weight = 0.0
+            else:
+                # Convert to string and check if it's "Bodyweight" or similar
+                weight_str = str(weight_value).strip()
+                if weight_str.lower() in ['bodyweight', 'bw', 'body weight', '0', '0.0', '0.00']:
+                    weight = 0.0
+                else:
+                    try:
+                        weight = float(weight_value)
+                    except (ValueError, TypeError):
+                        error_count += 1
+                        error_messages.append(f"第 {idx + 2} 行: 無法轉換重量值 '{weight_value}' 為數字")
+                        continue
             
             # Get unit
             unit = str(row['Unit']).strip().lower()
@@ -1136,6 +1150,33 @@ def delete_workout_session(user_id: str, workout_date: date, exercise_name: str)
         return len(set_ids)
     except Exception as e:
         print(f"Error deleting workout session: {e}")
+        return 0
+
+
+def update_workout_date(user_id: str, old_date: date, new_date: date) -> int:
+    """
+    Update the date for all workout logs on a specific date
+    
+    Args:
+        user_id: User UUID
+        old_date: Current date to change
+        new_date: New date to set
+    
+    Returns:
+        Number of updated workout logs
+    """
+    supabase = get_supabase()
+    
+    try:
+        result = supabase.table("workout_logs")\
+            .update({"date": new_date.isoformat()})\
+            .eq("user_id", user_id)\
+            .eq("date", old_date.isoformat())\
+            .execute()
+        
+        return len(result.data) if result.data else 0
+    except Exception as e:
+        print(f"Error updating workout date: {e}")
         return 0
 
 
