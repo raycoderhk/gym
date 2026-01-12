@@ -64,7 +64,15 @@ jobs:
           
           # Clone the private backup repository
           BACKUP_REPO_URL="https://${BACKUP_REPO_TOKEN}@github.com/${BACKUP_REPO}.git"
-          git clone "$BACKUP_REPO_URL" backup-repo || exit 0
+          echo "Attempting to clone private repository: ${BACKUP_REPO}"
+          if ! git clone "$BACKUP_REPO_URL" backup-repo; then
+            echo "❌ Failed to clone private repository"
+            echo "Please verify:"
+            echo "  1. BACKUP_REPO secret is correct (format: username/repo-name)"
+            echo "  2. BACKUP_REPO_TOKEN is a valid PAT with 'repo' scope"
+            echo "  3. PAT has access to the private repository"
+            exit 1
+          fi
           cd backup-repo
           
           # Find and rename backup files to simple names
