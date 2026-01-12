@@ -48,32 +48,41 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
       
-      - name: Commit backups to repository
+      - name: Push backups to private repository
         if: success()
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # Check if backup repository is configured
+          if [ -z "$BACKUP_REPO" ] || [ -z "$BACKUP_REPO_TOKEN" ]; then
+            echo "⚠️  Backup repository not configured. Skipping commit step."
+            echo "Set BACKUP_REPO and BACKUP_REPO_TOKEN secrets to enable automatic backups."
+            exit 0
+          fi
           
-          # Create backups directory if it doesn't exist
-          mkdir -p backups
+          # Configure git
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
           
-          # Move backup files to backups directory with timestamp
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          # Clone the private backup repository
+          BACKUP_REPO_URL="https://${BACKUP_REPO_TOKEN}@github.com/${BACKUP_REPO}.git"
+          git clone "$BACKUP_REPO_URL" backup-repo || exit 0
+          cd backup-repo
+          
+          # Find and rename backup files to simple names
           FILES_MOVED=false
           
-          # Handle workout files
-          for file in workouts_*.csv; do
+          # Handle workout files - rename to workouts.csv
+          for file in ../workouts_*.csv; do
             if [ -f "$file" ]; then
-              mv "$file" "backups/workouts_$TIMESTAMP.csv"
+              cp "$file" "workouts.csv"
               FILES_MOVED=true
               break
             fi
           done
           
-          # Handle exercise files
-          for file in exercises_*.csv; do
+          # Handle exercise files - rename to exercises.csv
+          for file in ../exercises_*.csv; do
             if [ -f "$file" ]; then
-              mv "$file" "backups/exercises_$TIMESTAMP.csv"
+              cp "$file" "exercises.csv"
               FILES_MOVED=true
               break
             fi
@@ -81,11 +90,14 @@ jobs:
           
           # Commit and push if files were moved
           if [ "$FILES_MOVED" = true ]; then
-            git add backups/
+            git add workouts.csv exercises.csv
+            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
             git commit -m "Automated backup: $TIMESTAMP" || exit 0
             git push || exit 0
+            echo "✅ Backups committed to private repository"
           else
-            echo "No backup files found to commit"
+            echo "⚠️  No backup files found to commit"
           fi
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BACKUP_REPO: ${{ secrets.BACKUP_REPO }}
+          BACKUP_REPO_TOKEN: ${{ secrets.BACKUP_REPO_TOKEN }}
