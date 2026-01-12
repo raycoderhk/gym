@@ -1,0 +1,91 @@
+name: Automated Workout Backup
+
+on:
+  # Run daily at 2 AM UTC (adjust timezone as needed)
+  schedule:
+    - cron: '0 2 * * *'
+  # Allow manual triggering from GitHub Actions UI
+  workflow_dispatch:
+  # Optional: Run on push to main (for testing)
+  # push:
+  #   branches:
+  #     - main
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run backup script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          USER_ID: ${{ secrets.USER_ID }}
+        run: |
+          python backup_workouts.py
+      
+      - name: Upload backup artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: workout-backups-${{ github.run_number }}
+          path: |
+            workouts_*.csv
+            exercises_*.csv
+          retention-days: 90
+          if-no-files-found: warn
+      
+      - name: Commit backups to repository
+        if: success()
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # Create backups directory if it doesn't exist
+          mkdir -p backups
+          
+          # Move backup files to backups directory with timestamp
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          FILES_MOVED=false
+          
+          # Handle workout files
+          for file in workouts_*.csv; do
+            if [ -f "$file" ]; then
+              mv "$file" "backups/workouts_$TIMESTAMP.csv"
+              FILES_MOVED=true
+              break
+            fi
+          done
+          
+          # Handle exercise files
+          for file in exercises_*.csv; do
+            if [ -f "$file" ]; then
+              mv "$file" "backups/exercises_$TIMESTAMP.csv"
+              FILES_MOVED=true
+              break
+            fi
+          done
+          
+          # Commit and push if files were moved
+          if [ "$FILES_MOVED" = true ]; then
+            git add backups/
+            git commit -m "Automated backup: $TIMESTAMP" || exit 0
+            git push || exit 0
+          else
+            echo "No backup files found to commit"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
